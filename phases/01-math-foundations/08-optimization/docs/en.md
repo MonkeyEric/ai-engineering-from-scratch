@@ -1,205 +1,205 @@
-# Optimization
+# 优化
 
-> Training a neural network is nothing more than finding the bottom of a valley.
+> 训练一个神经网络无非是在山谷中找到最低点。
 
-**Type:** Build
-**Language:** Python
-**Prerequisites:** Phase 1, Lessons 04-05 (Derivatives, Gradients)
-**Time:** ~75 minutes
+**类型：** 构建  
+**语言：** Python  
+**前置要求：** 阶段1，第04-05课（导数、梯度）  
+**时间：** 约75分钟
 
-## Learning Objectives
+## 学习目标
 
-- Implement vanilla gradient descent, SGD with momentum, and Adam from scratch
-- Compare optimizer convergence on the Rosenbrock function and explain why Adam adapts per-weight learning rates
-- Distinguish convex from non-convex loss landscapes and explain the role of saddle points in high dimensions
-- Configure learning rate schedules (step decay, cosine annealing, warmup) for training stability
+- 从零实现普通梯度下降、带动量的 SGD 和 Adam 优化器
+- 在 Rosenbrock 函数上比较优化器的收敛性，并解释 Adam 如何为每个权重自适应学习率
+- 区分凸损失景观和非凸损失景观，并解释鞍点在高维空间中的作用
+- 配置学习率调度策略（阶梯衰减、余弦退火、预热）以保证训练稳定性
 
-## The Problem
+## 问题描述
 
-You have a loss function. It tells you how wrong your model is. You have gradients. They tell you which direction makes the loss worse. Now you need a strategy for walking downhill.
+你有一个损失函数。它告诉你模型错得有多离谱。你有梯度。它们告诉你哪个方向会让损失变得更糟。现在你需要一个策略来走下坡路。
 
-The naive approach is simple: move opposite the gradient. Scale the step by some number called the learning rate. Repeat. This is gradient descent, and it works. But "works" has caveats. Too large a learning rate and you overshoot the valley entirely, bouncing between walls. Too small and you crawl toward the answer over thousands of unnecessary steps. Hit a saddle point and you stop moving even though you have not found a minimum.
+朴素的方法很简单：沿着梯度的反方向移动。用学习率这个数字来缩放步长。重复。这就是梯度下降，而且它有效。但“有效”是有条件的。学习率太大，你会完全越过山谷，在两边之间来回弹跳。学习率太小，你会爬行成千上万不必要的步才到达答案。遇到鞍点，你甚至会停止移动，尽管还没有找到最小值。
 
-Every optimizer in deep learning is an answer to the same question: how do you get to the bottom of the valley faster and more reliably?
+深度学习中的每一个优化器都在回答同一个问题：你怎样才能更快、更可靠地到达山谷的底部？
 
-## The Concept
+## 概念讲解
 
-### What optimization means
+### 优化意味着什么
 
-Optimization is finding the input values that minimize (or maximize) a function. In machine learning, the function is the loss. The inputs are the model's weights. Training is optimization.
+优化是找到使函数最小（或最大）的输入值。在机器学习中，这个函数是损失函数。输入是模型的权重。训练就是优化。
 
 ```
-minimize L(w) where:
-  L = loss function
-  w = model weights (could be millions of parameters)
+最小化 L(w)，其中：
+  L = 损失函数
+  w = 模型权重（可能有数百万个参数）
 ```
 
-### Gradient descent (vanilla)
+### 梯度下降（普通版）
 
-The simplest optimizer. Compute the gradient of the loss with respect to every weight. Move each weight in the opposite direction of its gradient. Scale the step by the learning rate.
+最简单的优化器。计算损失对每一个权重的梯度。将每个权重沿其梯度的反方向移动。用学习率来缩放步长。
 
 ```
 w = w - lr * gradient
 ```
 
-That is the entire algorithm. One line.
+这就是整个算法。一行代码。
 
 ```mermaid
 graph TD
-    A["* Starting point (high loss)"] --> B["Moving downhill along gradient"]
-    B --> C["Approaching minimum"]
-    C --> D["o Minimum (low loss)"]
+    A["* 起点（高损失）"] --> B["沿梯度下坡移动"]
+    B --> C["接近最小值"]
+    C --> D["o 最小值（低损失）"]
 ```
 
-### Learning rate: the most important hyperparameter
+### 学习率：最重要的超参数
 
-The learning rate controls step size. It determines everything about convergence.
+学习率控制步长。它决定收敛的一切。
 
 ```mermaid
 graph LR
-    subgraph TooLarge["Too Large (lr = 1.0)"]
-        A1["Step 1"] -->|overshoot| A2["Step 2"]
-        A2 -->|overshoot| A3["Step 3"]
-        A3 -->|diverging| A4["..."]
+    subgraph TooLarge["太大 (lr = 1.0)"]
+        A1["步 1"] -->|过头| A2["步 2"]
+        A2 -->|过头| A3["步 3"]
+        A3 -->|发散| A4["..."]
     end
-    subgraph TooSmall["Too Small (lr = 0.0001)"]
-        B1["Step 1"] -->|tiny step| B2["Step 2"]
-        B2 -->|tiny step| B3["Step 3"]
-        B3 -->|10,000 steps later| B4["Minimum"]
+    subgraph TooSmall["太小 (lr = 0.0001)"]
+        B1["步 1"] -->|微小步| B2["步 2"]
+        B2 -->|微小步| B3["步 3"]
+        B3 -->|10,000 步后| B4["最小值"]
     end
-    subgraph JustRight["Just Right (lr = 0.01)"]
-        C1["Start"] --> C2["..."] --> C3["Converged in ~100 steps"]
+    subgraph JustRight["刚好合适 (lr = 0.01)"]
+        C1["起点"] --> C2["..."] --> C3["约 100 步收敛"]
     end
 ```
 
-There is no formula for the right learning rate. You find it by experiment. Common starting points: 0.001 for Adam, 0.01 for SGD with momentum.
+没有公式能算出正确的学习率。你通过实验找到它。常见的起点：Adam 用 0.001，带动量的 SGD 用 0.01。
 
-### SGD vs batch vs mini-batch
+### SGD vs 批梯度 vs 小批量
 
-Vanilla gradient descent computes the gradient over the entire dataset before taking one step. This is called batch gradient descent. It is stable but slow.
+普通梯度下降在走一步之前先计算整个数据集上的梯度。这叫做批梯度下降。它稳定但慢。
 
-Stochastic gradient descent (SGD) computes the gradient on a single random sample and steps immediately. It is noisy but fast.
+随机梯度下降（SGD）在单个随机样本上计算梯度并立即更新。它噪声大但快。
 
-Mini-batch gradient descent splits the difference. Compute the gradient over a small batch (32, 64, 128, 256 samples), then step. This is what everyone actually uses.
+小批量梯度下降取折中。在一个小批量（32、64、128、256 个样本）上计算梯度，然后更新。这才是大家实际使用的。
 
-| Variant | Batch size | Gradient quality | Speed per step | Noise |
-|---------|-----------|-----------------|---------------|-------|
-| Batch GD | Entire dataset | Exact | Slow | None |
-| SGD | 1 sample | Very noisy | Fast | High |
-| Mini-batch | 32-256 | Good estimate | Balanced | Moderate |
+| 变体 | 批量大小 | 梯度质量 | 每步速度 | 噪声 |
+|------|---------|----------|---------|------|
+| 批梯度 | 整个数据集 | 精确 | 慢 | 无 |
+| SGD | 1 个样本 | 噪声很大 | 快 | 高 |
+| 小批量 | 32-256 | 良好估计 | 均衡 | 中等 |
 
-The noise in SGD and mini-batch is not a bug. It helps escape shallow local minima and saddle points.
+SGD 和小批量中的噪声不是缺陷。它有助于逃离浅的局部最小值和鞍点。
 
-### Momentum: the ball rolling downhill
+### 动量：滚下山坡的球
 
-Vanilla gradient descent only looks at the current gradient. If the gradient zigzags (common in narrow valleys), progress is slow. Momentum fixes this by accumulating past gradients into a velocity term.
+普通梯度下降只看当前梯度。如果梯度来回摆动（在狭窄山谷中常见），进展就会很慢。动量通过将过去的梯度累积到一个速度项中来解决这个问题。
 
 ```
 v = beta * v + gradient
 w = w - lr * v
 ```
 
-The analogy: a ball rolling downhill. It does not stop and restart at every bump. It builds speed in consistent directions and dampens oscillations.
+类比：一个滚下山坡的球。它不会在每个凸起处停下来重新启动。它在一致的方向上积累速度，并抑制振荡。
 
 ```mermaid
 graph TD
-    subgraph Without["Without Momentum (zigzag, slow)"]
-        W1["Start"] -->|left| W2[" "]
-        W2 -->|right| W3[" "]
-        W3 -->|left| W4[" "]
-        W4 -->|right| W5[" "]
-        W5 -->|left| W6[" "]
-        W6 --> W7["Minimum"]
+    subgraph Without["无动量（来回摆动，慢）"]
+        W1["起点"] -->|左| W2[" "]
+        W2 -->|右| W3[" "]
+        W3 -->|左| W4[" "]
+        W4 -->|右| W5[" "]
+        W5 -->|左| W6[" "]
+        W6 --> W7["最小值"]
     end
-    subgraph With["With Momentum (smooth, fast)"]
-        M1["Start"] --> M2[" "] --> M3[" "] --> M4["Minimum"]
+    subgraph With["有动量（平滑，快）"]
+        M1["起点"] --> M2[" "] --> M3[" "] --> M4["最小值"]
     end
 ```
 
-`beta` (typically 0.9) controls how much history to keep. Higher beta means more momentum, smoother paths, but slower response to direction changes.
+`beta`（通常为 0.9）控制保留多少历史。beta 越大，动量越大，路径越平滑，但对方向变化的响应越慢。
 
-### Adam: adaptive learning rates
+### Adam：自适应学习率
 
-Different weights need different learning rates. A weight that rarely gets large gradients should take bigger steps when it finally does. A weight that gets huge gradients constantly should take smaller steps.
+不同的权重需要不同的学习率。一个很少获得大梯度的权重，当它终于获得大梯度时，应该迈出更大的步子。一个不断获得巨大梯度的权重应该迈出更小的步子。
 
-Adam (Adaptive Moment Estimation) tracks two things per weight:
+Adam（自适应矩估计）为每个权重跟踪两个量：
 
-1. First moment (m): running average of gradients (like momentum)
-2. Second moment (v): running average of squared gradients (gradient magnitude)
+1. 一阶矩（m）：梯度的运行平均值（类似动量）
+2. 二阶矩（v）：梯度平方的运行平均值（梯度大小）
 
 ```
 m = beta1 * m + (1 - beta1) * gradient
 v = beta2 * v + (1 - beta2) * gradient^2
 
-m_hat = m / (1 - beta1^t)    bias correction
-v_hat = v / (1 - beta2^t)    bias correction
+m_hat = m / (1 - beta1^t)    偏差修正
+v_hat = v / (1 - beta2^t)    偏差修正
 
 w = w - lr * m_hat / (sqrt(v_hat) + epsilon)
 ```
 
-The division by `sqrt(v_hat)` is the key insight. Weights with large gradients get divided by a large number (small effective step). Weights with small gradients get divided by a small number (large effective step). Each weight gets its own adaptive learning rate.
+除以 `sqrt(v_hat)` 是关键见解。梯度大的权重会被一个大数除（有效步长小）。梯度小的权重会被一个小数除（有效步长大）。每个权重都有自己的自适应学习率。
 
-Default hyperparameters: `lr=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8`. These defaults work well for most problems.
+默认超参数：`lr=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8`。这些默认值对大多数问题都很有效。
 
-### Learning rate schedules
+### 学习率调度
 
-A fixed learning rate is a compromise. Early in training, you want large steps to make fast progress. Late in training, you want small steps to fine-tune near the minimum.
+固定的学习率是一种妥协。训练早期，你需要大步长以快速进展。训练后期，你需要小步长以在最小值附近微调。
 
-Common schedules:
+常见的调度策略：
 
-| Schedule | Formula | Use case |
-|----------|---------|----------|
-| Step decay | lr = lr * factor every N epochs | Simple, manual control |
-| Exponential decay | lr = lr_0 * decay^t | Smooth reduction |
-| Cosine annealing | lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * t / T)) | Transformers, modern training |
-| Warmup + decay | Linear ramp up, then decay | Large models, prevents early instability |
+| 调度策略 | 公式 | 用例 |
+|----------|------|------|
+| 阶梯衰减 | 每 N 个 epoch lr = lr * factor | 简单，手动控制 |
+| 指数衰减 | lr = lr_0 * decay^t | 平滑减小 |
+| 余弦退火 | lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * t / T)) | Transformer，现代训练 |
+| 预热 + 衰减 | 线性上升，然后衰减 | 大模型，防止早期不稳定 |
 
-### Convex vs non-convex
+### 凸函数 vs 非凸函数
 
-A convex function has one minimum. Gradient descent always finds it. A quadratic like `f(x) = x^2` is convex.
+凸函数只有一个最小值。梯度下降总能找到它。像 `f(x) = x^2` 这样的二次函数是凸的。
 
-Neural network loss functions are non-convex. They have many local minima, saddle points, and flat regions.
+神经网络损失函数是非凸的。它们有许多局部最小值、鞍点和平坦区域。
 
 ```mermaid
 graph LR
-    subgraph Convex["Convex: One valley, one answer"]
+    subgraph Convex["凸函数：一个山谷，一个答案"]
         direction TB
-        CV1["High loss"] --> CV2["Global minimum"]
+        CV1["高损失"] --> CV2["全局最小值"]
     end
-    subgraph NonConvex["Non-convex: Multiple valleys, saddle points"]
+    subgraph NonConvex["非凸函数：多个山谷，鞍点"]
         direction TB
-        NC1["Start"] --> NC2["Local minimum"]
-        NC1 --> NC3["Saddle point"]
-        NC1 --> NC4["Global minimum"]
+        NC1["起点"] --> NC2["局部最小值"]
+        NC1 --> NC3["鞍点"]
+        NC1 --> NC4["全局最小值"]
     end
 ```
 
-In practice, local minima in high-dimensional neural networks are rarely a problem. Most local minima have loss values close to the global minimum. Saddle points (flat in some directions, curved in others) are the real obstacle. Momentum and noise from mini-batches help escape them.
+在实践中，高维神经网络中的局部最小值很少是问题。大多数局部最小值的损失值接近全局最小值。鞍点（在某些方向平坦，在其他方向弯曲）才是真正的障碍。动量和来自小批量的噪声有助于逃离它们。
 
-### Loss landscape visualization
+### 损失景观可视化
 
-The loss is a function of all weights. For a model with 1 million weights, the loss landscape lives in 1,000,001-dimensional space. We visualize it by picking two random directions in weight space and plotting the loss along those directions, producing a 2D surface.
+损失是所有权重的函数。对于一个有 100 万个权重的模型，损失景观存在于 1,000,001 维空间中。我们通过在权重空间中选取两个随机方向，并沿着这些方向绘制损失来可视化它，从而得到一个二维曲面。
 
 ```mermaid
 graph TD
-    HL["High loss region"] --> SP["Saddle point"]
-    HL --> LM["Local minimum"]
+    HL["高损失区域"] --> SP["鞍点"]
+    HL --> LM["局部最小值"]
     SP --> LM
-    SP --> GM["Global minimum"]
-    LM -.->|"shallow barrier"| GM
+    SP --> GM["全局最小值"]
+    LM -.->|"浅障碍"| GM
     style HL fill:#ff6666,color:#000
     style SP fill:#ffcc66,color:#000
     style LM fill:#66ccff,color:#000
     style GM fill:#66ff66,color:#000
 ```
 
-Sharp minima generalize poorly. Flat minima generalize well. This is one reason SGD with momentum often outperforms Adam on final test accuracy: its noise prevents settling into sharp minima.
+尖锐的最小值泛化能力差。平坦的最小值泛化能力强。这就是为什么带动量的 SGD 在最终测试准确率上常常优于 Adam 的原因之一：它的噪声阻止了陷入尖锐的最小值。
 
-## Build It
+## 动手实现
 
-### Step 1: Define a test function
+### 步骤 1：定义一个测试函数
 
-The Rosenbrock function is a classic optimization benchmark. Its minimum is at (1, 1) inside a narrow curved valley that is easy to find but hard to follow.
+Rosenbrock 函数是一个经典的优化基准。它的最小值在 (1, 1)，位于一个狭窄弯曲的山谷中，容易找到但难以沿着山谷走。
 
 ```
 f(x, y) = (1 - x)^2 + 100 * (y - x^2)^2
@@ -217,7 +217,7 @@ def rosenbrock_gradient(params):
     return [df_dx, df_dy]
 ```
 
-### Step 2: Vanilla gradient descent
+### 步骤 2：普通梯度下降
 
 ```python
 class GradientDescent:
@@ -228,7 +228,7 @@ class GradientDescent:
         return [p - self.lr * g for p, g in zip(params, grads)]
 ```
 
-### Step 3: SGD with momentum
+### 步骤 3：带动量的 SGD
 
 ```python
 class SGDMomentum:
@@ -247,7 +247,7 @@ class SGDMomentum:
         return [p - self.lr * v for p, v in zip(params, self.velocity)]
 ```
 
-### Step 4: Adam
+### 步骤 4：Adam
 
 ```python
 class Adam:
@@ -285,7 +285,7 @@ class Adam:
         ]
 ```
 
-### Step 5: Run and compare
+### 步骤 5：运行并比较
 
 ```python
 def optimize(optimizer, func, grad_func, start, steps=5000):
@@ -309,11 +309,11 @@ for name, history in [("GD", gd_history), ("SGD+M", sgd_history), ("Adam", adam_
     print(f"{name:6s} -> x={final[0]:.6f}, y={final[1]:.6f}, loss={loss:.8f}")
 ```
 
-Expected output: Adam converges fastest. SGD with momentum follows a smoother path. Vanilla GD makes slow progress along the narrow valley.
+预期输出：Adam 收敛最快。带动量的 SGD 路径更平滑。普通梯度下降沿着狭窄山谷进展缓慢。
 
-## Use It
+## 使用示例
 
-In practice, use PyTorch or JAX optimizers. They handle parameter groups, weight decay, gradient clipping, and GPU acceleration.
+在实践中，使用 PyTorch 或 JAX 优化器。它们处理参数组、权重衰减、梯度裁剪和 GPU 加速。
 
 ```python
 import torch
@@ -327,50 +327,50 @@ adamw = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(adam, T_max=100)
 ```
 
-Rules of thumb:
+经验法则：
 
-- Start with Adam (lr=0.001). It works for most problems without tuning.
-- Switch to SGD with momentum (lr=0.01, momentum=0.9) when you need the best final accuracy and can afford more tuning.
-- Use AdamW (Adam with decoupled weight decay) for transformers.
-- Always use a learning rate schedule for training runs longer than a few epochs.
-- If training is unstable, reduce the learning rate. If training is too slow, increase it.
+- 从 Adam 开始（lr=0.001）。它适用于大多数问题，无需调参。
+- 当你需要最好的最终准确率并且可以承担更多调参时，切换到带动量的 SGD（lr=0.01，momentum=0.9）。
+- 对于 Transformer，使用 AdamW（Adam 解耦权重衰减）。
+- 对于超过几个 epoch 的训练运行，总是使用学习率调度。
+- 如果训练不稳定，降低学习率。如果训练太慢，提高学习率。
 
-## Ship It
+## 交付成果
 
-This lesson produces a prompt for choosing the right optimizer. See `outputs/prompt-optimizer-guide.md`.
+本课程产出一个用于选择合适优化器的提示。参见 `outputs/prompt-optimizer-guide.md`。
 
-The optimizer classes built here reappear in Phase 3 when we train a neural network from scratch.
+这里构建的优化器类将在阶段3我们从零训练神经网络时再次出现。
 
-## Exercises
+## 练习
 
-1. **Learning rate sweep.** Run vanilla gradient descent on the Rosenbrock function with learning rates [0.0001, 0.0005, 0.001, 0.005, 0.01]. Plot or print the final loss after 5000 steps for each. Find the largest learning rate that still converges.
+1. **学习率扫描。** 在 Rosenbrock 函数上以学习率 [0.0001, 0.0005, 0.001, 0.005, 0.01] 运行普通梯度下降。绘制或打印每个学习率在 5000 步后的最终损失。找到仍然能够收敛的最大学习率。
 
-2. **Momentum comparison.** Run SGD with momentum values [0.0, 0.5, 0.9, 0.99] on the Rosenbrock function. Track the loss at every step. Which momentum value converges fastest? Which overshoots?
+2. **动量比较。** 在 Rosenbrock 函数上以动量值 [0.0, 0.5, 0.9, 0.99] 运行 SGD。记录每一步的损失。哪个动量值收敛最快？哪个会过头？
 
-3. **Saddle point escape.** Define the function `f(x, y) = x^2 - y^2` (a saddle point at the origin). Start at (0.01, 0.01). Compare how vanilla GD, SGD with momentum, and Adam behave. Which escapes the saddle point?
+3. **逃离鞍点。** 定义函数 `f(x, y) = x^2 - y^2`（在原点有一个鞍点）。从 (0.01, 0.01) 开始。比较普通 GD、带动量的 SGD 和 Adam 的行为。哪个能逃离鞍点？
 
-4. **Implement learning rate decay.** Add an exponential decay schedule to the GradientDescent class: `lr = lr_0 * 0.999^step`. Compare convergence with and without decay on the Rosenbrock function.
+4. **实现学习率衰减。** 为 GradientDescent 类添加一个指数衰减调度：`lr = lr_0 * 0.999^step`。在 Rosenbrock 函数上比较有衰减和无衰减的收敛情况。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|----------------|----------------------|
-| Gradient descent | "Go downhill" | Update weights by subtracting the gradient scaled by the learning rate. The most basic optimizer. |
-| Learning rate | "Step size" | A scalar that controls how far each update moves the weights. Too large causes divergence. Too small wastes compute. |
-| Momentum | "Keep rolling" | Accumulate past gradients into a velocity vector. Dampens oscillations and accelerates movement through consistent directions. |
-| SGD | "Random sampling" | Stochastic gradient descent. Compute gradient on a random subset instead of the full dataset. Almost always means mini-batch SGD in practice. |
-| Mini-batch | "A chunk of data" | A small subset of training data (32-256 samples) used to estimate the gradient. Balances speed and gradient accuracy. |
-| Adam | "The default optimizer" | Adaptive Moment Estimation. Tracks per-weight running averages of gradients and squared gradients to give each weight its own learning rate. |
-| Bias correction | "Fix the cold start" | Adam's first and second moments are initialized to zero. Bias correction divides by (1 - beta^t) to compensate during early steps. |
-| Learning rate schedule | "Change lr over time" | A function that adjusts the learning rate during training. Large steps early, small steps late. |
-| Convex function | "One valley" | A function where any local minimum is the global minimum. Gradient descent always finds it. Neural network losses are not convex. |
-| Saddle point | "Flat but not a minimum" | A point where the gradient is zero but it is a minimum in some directions and a maximum in others. Common in high dimensions. |
-| Loss landscape | "The terrain" | The loss function plotted over weight space. Visualized by slicing along two random directions. |
-| Convergence | "Getting there" | The optimizer has reached a point where further steps do not meaningfully reduce the loss. |
+| 术语 | 人们常说的 | 实际含义 |
+|------|-----------|----------|
+| 梯度下降 | “走下坡” | 通过减去梯度乘以学习率来更新权重。最基本的优化器。 |
+| 学习率 | “步长” | 控制每次更新移动权重大小的标量。太大会导致发散。太小会浪费计算。 |
+| 动量 | “继续滚动” | 将过去的梯度累积成一个速度向量。抑制振荡，并通过一致的方向加速移动。 |
+| SGD | “随机采样” | 随机梯度下降。在随机子集而非整个数据集上计算梯度。实践中几乎总是指小批量 SGD。 |
+| 小批量 | “一块数据” | 一小部分训练数据（32-256 个样本），用于估计梯度。平衡速度和梯度准确性。 |
+| Adam | “默认优化器” | 自适应矩估计。为每个权重跟踪梯度和梯度平方的运行平均值，从而为每个权重赋予自己的学习率。 |
+| 偏差修正 | “修复冷启动” | Adam 的一阶矩和二阶矩初始化为零。偏差修正除以 (1 - beta^t) 以在早期步中补偿。 |
+| 学习率调度 | “随时间改变 lr” | 一个在训练期间调整学习率的函数。早期大步长，晚期小步长。 |
+| 凸函数 | “一个山谷” | 任何局部最小值都是全局最小值的函数。梯度下降总能找到它。神经网络损失不是凸的。 |
+| 鞍点 | “平坦但不是最小值” | 梯度为零，但在某些方向是最小值，在另一些方向是最大值。在高维空间中常见。 |
+| 损失景观 | “地形” | 损失函数在权重空间上的图形。通过沿两个随机方向切片来可视化。 |
+| 收敛 | “到达那里” | 优化器已经到达一个点，进一步更新不会显著降低损失。 |
 
-## Further Reading
+## 延伸阅读
 
-- [Sebastian Ruder: An overview of gradient descent optimization algorithms](https://ruder.io/optimizing-gradient-descent/) - comprehensive survey of all major optimizers
-- [Why Momentum Really Works (Distill)](https://distill.pub/2017/momentum/) - interactive visualization of momentum dynamics
-- [Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014)](https://arxiv.org/abs/1412.6980) - the original Adam paper, readable and short
-- [Visualizing the Loss Landscape of Neural Nets (Li et al., 2018)](https://arxiv.org/abs/1712.09913) - the paper that showed sharp vs flat minima
+- [Sebastian Ruder：梯度下降优化算法综述](https://ruder.io/optimizing-gradient-descent/) —— 所有主要优化器的全面综述
+- [为什么动量真正有效 (Distill)](https://distill.pub/2017/momentum/) —— 动量动力学的交互式可视化
+- [Adam：一种随机优化方法 (Kingma & Ba, 2014)](https://arxiv.org/abs/1412.6980) —— 原始 Adam 论文，可读且简短
+- [可视化神经网络的损失景观 (Li et al., 2018)](https://arxiv.org/abs/1712.09913) —— 展示尖锐最小值与平坦最小值的那篇论文
