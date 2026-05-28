@@ -1,147 +1,147 @@
-# Norms and Distances
+# 范数与距离
 
-> Your distance function defines what "similar" means. Choose wrong and everything downstream breaks.
+> 你的距离函数定义了"相似"的含义。选错了，之后的一切都会崩塌。
 
-**Type:** Build
-**Language:** Python
-**Prerequisites:** Phase 1, Lessons 01 (Linear Algebra Intuition), 02 (Vectors, Matrices & Operations)
-**Time:** ~90 minutes
+**类型：** 构建
+**语言：** Python
+**前置要求：** 阶段1，第01课（线性代数直觉）、第02课（向量、矩阵与运算）
+**时间：** 约90分钟
 
-## Learning Objectives
+## 学习目标
 
-- Implement L1, L2, cosine, Mahalanobis, Jaccard, and edit distance functions from scratch
-- Select the appropriate distance metric for a given ML task and explain why alternatives fail
-- Connect L1 and L2 norms to LASSO and Ridge regularization and their geometric constraint regions
-- Demonstrate how the same dataset produces different nearest neighbors under different metrics
+- 从头实现 L1、L2、余弦、马氏、Jaccard 和编辑距离函数
+- 为给定的机器学习任务选择合适距离度量，并解释为什么其他选择会失败
+- 将 L1、L2 范数与 LASSO 和 Ridge 正则化及其几何约束区域联系起来
+- 演示同一数据集在不同距离度量下会产生不同的最近邻
 
-## The Problem
+## 问题描述
 
-You have two vectors. Maybe they are word embeddings. Maybe they are user profiles. Maybe they are pixel arrays. You need to know: how close are they?
+你有两个向量。它们可能是词嵌入，可能是用户画像，也可能是像素数组。你需要知道：它们有多接近？
 
-The answer depends entirely on which distance function you pick. Two data points can be nearest neighbors under one metric and far apart under another. Your KNN classifier, your recommendation engine, your vector database, your clustering algorithm, your loss function -- they all depend on this choice. Get it wrong and your model optimizes for the wrong thing.
+答案完全取决于你选择哪个距离函数。两个数据点在一个度量下可能是最近邻，在另一个度量下却相距甚远。你的 KNN 分类器、推荐引擎、向量数据库、聚类算法、损失函数——它们都依赖于这个选择。选错了，你的模型就在为错误的目标进行优化。
 
-There is no universal best distance. L2 works for spatial data. Cosine similarity dominates NLP. Jaccard handles sets. Edit distance handles strings. Mahalanobis accounts for correlations. Wasserstein moves probability mass. Each one encodes a different assumption about what "similar" means.
+没有普适的最佳距离。L2 适用于空间数据。余弦相似度主导自然语言处理领域。Jaccard 处理集合。编辑距离处理字符串。马氏距离考虑相关性。Wasserstein 移动概率质量。每一种都编码了关于"相似"含义的不同假设。
 
-This lesson builds every major distance function from scratch, shows you when each one is the right tool, and demonstrates how the same data produces completely different nearest neighbors depending on which metric you use.
+本节课将从零实现每一个主要距离函数，告诉你什么时候用哪一个，并演示相同的数据在不同度量下如何产生完全不同的最近邻。
 
-## The Concept
+## 核心概念
 
-### Norms: measuring vector magnitude
+### 范数：度量向量的大小
 
-A norm measures the "size" of a vector. Every distance function between two vectors can be written as the norm of their difference: d(a, b) = ||a - b||. So understanding norms is understanding distances.
+范数衡量向量的"大小"。两个向量之间的每个距离函数都可以写成它们差值的范数：d(a, b) = ||a - b||。因此，理解范数就是理解距离。
 
-### L1 Norm (Manhattan distance)
+### L1 范数（曼哈顿距离）
 
-The L1 norm sums the absolute values of all components.
+L1 范数计算所有分量绝对值的和。
 
 ```
 ||x||_1 = |x_1| + |x_2| + ... + |x_n|
 ```
 
-It is called Manhattan distance because it measures how far you walk on a city grid where you can only move along axes. No diagonals.
+它被称为曼哈顿距离，因为它衡量的是你在一个只能沿坐标轴移动的城市网格中行走的距离。没有对角线。
 
 ```
-Point A = (1, 1)
-Point B = (4, 5)
+点 A = (1, 1)
+点 B = (4, 5)
 
-L1 distance = |4-1| + |5-1| = 3 + 4 = 7
+L1 距离 = |4-1| + |5-1| = 3 + 4 = 7
 
-On a grid, you walk 3 blocks east and 4 blocks north.
+在网格上，你向东走 3 个街区，再向北走 4 个街区。
 ```
 
-When to use L1:
-- High-dimensional sparse data (text features, one-hot encodings)
-- When you want robustness to outliers (a single huge difference does not dominate)
-- Feature selection problems (L1 regularization promotes sparsity)
+何时使用 L1：
+- 高维稀疏数据（文本特征、独热编码）
+- 当你希望对离群值鲁棒时（单个巨大差异不会主导结果）
+- 特征选择问题（L1 正则化促进稀疏性）
 
-Connection to L1 regularization (Lasso): adding ||w||_1 to your loss function penalizes the sum of absolute weight values. This pushes small weights to exactly zero, performing automatic feature selection. The L1 penalty creates diamond-shaped constraint regions in weight space, and the corners of diamonds lie on the axes where some weights are zero.
+与 L1 正则化（Lasso）的联系：在损失函数中加入 ||w||_1 会惩罚权重的绝对值之和。这会将小权重精确推向零，执行自动特征选择。L1 惩罚项在权重空间中产生菱形约束区域，菱形的角落在坐标轴上，在那里某些权重为零。
 
-Connection to loss functions: Mean Absolute Error (MAE) is the average L1 distance between predictions and targets. It penalizes all errors linearly, making it robust to outliers compared to MSE.
+与损失函数的联系：平均绝对误差（MAE）是预测值与目标值之间 L1 距离的平均值。它对所有误差线性惩罚，与 MSE 相比对离群值更鲁棒。
 
-### L2 Norm (Euclidean distance)
+### L2 范数（欧几里得距离）
 
-The L2 norm is the straight-line distance. Square root of the sum of squared components.
+L2 范数是直线距离。各分量平方和的平方根。
 
 ```
 ||x||_2 = sqrt(x_1^2 + x_2^2 + ... + x_n^2)
 ```
 
-This is the distance you learned in geometry class. Pythagoras in n dimensions.
+这是你在几何课上学到的距离。n 维空间中的毕达哥拉斯定理。
 
 ```
-Point A = (1, 1)
-Point B = (4, 5)
+点 A = (1, 1)
+点 B = (4, 5)
 
-L2 distance = sqrt((4-1)^2 + (5-1)^2) = sqrt(9 + 16) = sqrt(25) = 5.0
+L2 距离 = sqrt((4-1)^2 + (5-1)^2) = sqrt(9 + 16) = sqrt(25) = 5.0
 
-The straight line, cutting diagonally through the grid.
+直线，斜穿网格。
 ```
 
-When to use L2:
-- Low-to-medium dimensional continuous data
-- When the feature scales are comparable
-- Physical distances (spatial data, sensor readings)
-- Image similarity at the pixel level
+何时使用 L2：
+- 中低维连续数据
+- 当特征尺度可比时
+- 物理距离（空间数据、传感器读数）
+- 像素级的图像相似性
 
-Connection to L2 regularization (Ridge): adding ||w||_2^2 to your loss function penalizes large weights. Unlike L1, it does not push weights to zero. It shrinks all weights toward zero proportionally. The L2 penalty creates circular constraint regions, so there are no corners on axes. Weights get small but rarely exactly zero.
+与 L2 正则化（Ridge）的联系：在损失函数中加入 ||w||_2^2 会惩罚大的权重。与 L1 不同，它不会将权重推向零。它会按比例将所有权重向零收缩。L2 惩罚项产生圆形约束区域，因此在坐标轴上没有角点。权重会变小，但很少精确为零。
 
-Connection to loss functions: Mean Squared Error (MSE) is the average of L2 distances squared. Squaring penalizes large errors more heavily than small ones.
+与损失函数的联系：均方误差（MSE）是 L2 距离平方的平均值。平方使得大误差的惩罚比小误差重得多。
 
 ```
-MAE (L1 loss):  |y - y_hat|         Linear penalty. Robust to outliers.
-MSE (L2 loss):  (y - y_hat)^2       Quadratic penalty. Sensitive to outliers.
+MAE (L1 损失):  |y - y_hat|         线性惩罚。对离群值鲁棒。
+MSE (L2 损失):  (y - y_hat)^2       二次惩罚。对离群值敏感。
 ```
 
-### Lp Norms: the general family
+### Lp 范数：一般家族
 
-L1 and L2 are special cases of the Lp norm:
+L1 和 L2 是 Lp 范数的特例：
 
 ```
 ||x||_p = (|x_1|^p + |x_2|^p + ... + |x_n|^p)^(1/p)
 ```
 
-Different values of p produce different shaped "unit balls" (the set of all points at distance 1 from the origin):
+不同的 p 值产生不同形状的"单位球"（所有到原点距离为 1 的点的集合）：
 
 ```
-p=1:    Diamond shape      (corners on axes)
-p=2:    Circle/sphere      (the usual round ball)
-p=3:    Superellipse       (rounded square)
-p=inf:  Square/hypercube   (flat sides along axes)
+p=1:    菱形           （角点在坐标轴上）
+p=2:    圆/球          （通常的圆球形）
+p=3:    超椭圆         （圆角方形）
+p=inf:  正方形/超立方体（沿坐标轴的平边）
 ```
 
-### L-infinity Norm (Chebyshev distance)
+### L-无穷范数（切比雪夫距离）
 
-As p approaches infinity, the Lp norm converges to the maximum absolute component.
+当 p 趋近于无穷时，Lp 范数收敛到最大绝对值分量。
 
 ```
 ||x||_inf = max(|x_1|, |x_2|, ..., |x_n|)
 ```
 
-The distance between two points is determined by the single dimension where they differ the most. All other dimensions are ignored.
+两点之间的距离由它们差异最大的那个维度决定。所有其他维度都被忽略。
 
 ```
-Point A = (1, 1)
-Point B = (4, 5)
+点 A = (1, 1)
+点 B = (4, 5)
 
-L-inf distance = max(|4-1|, |5-1|) = max(3, 4) = 4
+L-无穷距离 = max(|4-1|, |5-1|) = max(3, 4) = 4
 ```
 
-When to use L-infinity:
-- When the worst-case deviation in any single dimension matters
-- Game boards (a king in chess moves in L-infinity: one step in any direction costs 1)
-- Manufacturing tolerances (every dimension must be within spec)
+何时使用 L-无穷：
+- 当任何单个维度的最坏情况偏差很重要时
+- 棋盘（国际象棋中的王走的就是 L-无穷距离：任意方向一步代价为 1）
+- 制造公差（每个维度都必须在规格范围内）
 
-### Cosine Similarity and Cosine Distance
+### 余弦相似度与余弦距离
 
-Cosine similarity measures the angle between two vectors, ignoring their magnitudes.
+余弦相似度衡量两个向量之间的角度，忽略它们的大小。
 
 ```
 cos_sim(a, b) = (a . b) / (||a||_2 * ||b||_2)
 ```
 
-It ranges from -1 (opposite directions) to +1 (same direction). Perpendicular vectors have cosine similarity 0.
+它的范围从 -1（方向相反）到 +1（方向相同）。垂直向量的余弦相似度为 0。
 
-Cosine distance converts it to a distance: cosine_distance = 1 - cosine_similarity. This ranges from 0 (identical direction) to 2 (opposite direction).
+余弦距离将其转换为距离：余弦距离 = 1 - 余弦相似度。范围从 0（方向相同）到 2（方向相反）。
 
 ```
 a = (1, 0)    b = (1, 1)
@@ -150,120 +150,120 @@ cos_sim = (1*1 + 0*1) / (1 * sqrt(2)) = 1/sqrt(2) = 0.707
 cos_dist = 1 - 0.707 = 0.293
 ```
 
-Why cosine dominates NLP and embeddings: in text, document length should not affect similarity. A document about cats that is twice as long as another document about cats should still be "similar." Cosine similarity ignores magnitude (length) and only cares about direction. Two documents with the same word distribution but different lengths point in the same direction and get cosine similarity 1.0.
+为什么余弦在 NLP 和嵌入中占主导地位：在文本中，文档长度不应影响相似性。一篇关于猫的文档如果比另一篇关于猫的文档长一倍，仍然应该是"相似"的。余弦相似度忽略大小（长度），只关心方向。具有相同词分布但长度不同的两个文档指向相同方向，余弦相似度为 1.0。
 
-When to use cosine similarity:
-- Text similarity (TF-IDF vectors, word embeddings, sentence embeddings)
-- Any domain where magnitude is noise and direction is signal
-- Recommendation systems (user preference vectors)
-- Embedding search (vector databases almost always use cosine or dot product)
+何时使用余弦相似度：
+- 文本相似度（TF-IDF 向量、词嵌入、句子嵌入）
+- 任何以大小为噪声、方向为信号的领域
+- 推荐系统（用户偏好向量）
+- 嵌入搜索（向量数据库几乎总是使用余弦或点积）
 
-### Dot Product Similarity vs Cosine Similarity
+### 点积相似度与余弦相似度
 
-The dot product of two vectors is:
+两个向量的点积是：
 
 ```
 a . b = a_1*b_1 + a_2*b_2 + ... + a_n*b_n
-      = ||a|| * ||b|| * cos(angle)
+      = ||a|| * ||b|| * cos(角度)
 ```
 
-Cosine similarity is the dot product normalized by both magnitudes. When both vectors are already unit-normalized (magnitude = 1), dot product and cosine similarity are identical.
+余弦相似度是点积除以两个模长。当两个向量都已归一化为单位向量（模长 = 1）时，点积和余弦相似度是相同的。
 
 ```
-If ||a|| = 1 and ||b|| = 1:
-    a . b = cos(angle between a and b)
+如果 ||a|| = 1 且 ||b|| = 1：
+    a . b = a 与 b 之间夹角的余弦
 ```
 
-When they differ: dot product includes magnitude information. A vector with larger magnitude gets a higher dot product score. This matters in some retrieval systems where you want "popular" items to rank higher. The magnitude acts as an implicit quality or importance signal.
+当它们不相等时：点积包含模长信息。模长较大的向量会得到更高的点积分数。这在某些检索系统中很重要，因为你希望"热门"项目排名更高。模长充当隐式的质量或重要性信号。
 
 ```
 a = (3, 0)    b = (1, 0)    c = (0, 1)
 
-dot(a, b) = 3     dot(a, c) = 0
-cos(a, b) = 1.0   cos(a, c) = 0.0
+点积(a, b) = 3     点积(a, c) = 0
+余弦(a, b) = 1.0   余弦(a, c) = 0.0
 
-Both agree on direction, but dot product also reflects magnitude.
+两者在方向上一致，但点积还反映了模长。
 ```
 
-In practice:
-- Use cosine similarity when you want pure directional similarity
-- Use dot product when magnitudes carry meaningful information
-- Many vector databases (Pinecone, Weaviate, Qdrant) let you choose between them
-- If your embeddings are L2-normalized, the choice does not matter
+在实践中：
+- 当你需要纯粹的方向相似性时，使用余弦相似度
+- 当模长携带有意义的信息时，使用点积
+- 许多向量数据库（Pinecone、Weaviate、Qdrant）让你在两者之间选择
+- 如果你的嵌入是 L2 归一化的，那么选择无关紧要
 
-### Mahalanobis Distance
+### 马氏距离
 
-Euclidean distance treats all dimensions equally. But if your features are correlated or have different scales, L2 gives misleading results.
+欧几里得距离平等对待所有维度。但如果你的特征相关或具有不同尺度，L2 会给出误导性结果。
 
-Mahalanobis distance accounts for the covariance structure of the data.
+马氏距离考虑了数据的协方差结构。
 
 ```
 d_M(x, y) = sqrt((x - y)^T * S^(-1) * (x - y))
 ```
 
-where S is the covariance matrix of the data.
+其中 S 是数据的协方差矩阵。
 
-Intuitively: Mahalanobis distance first decorrelates and normalizes the data (whitening), then computes L2 distance in that transformed space. If S is the identity matrix (uncorrelated, unit variance features), Mahalanobis distance reduces to Euclidean distance.
-
-```
-Example: height and weight are correlated.
-Someone 6'2" and 180 lbs is not unusual.
-Someone 5'0" and 180 lbs is unusual.
-
-Euclidean distance might say they are equally far from the mean.
-Mahalanobis distance correctly identifies the second as an outlier
-because it accounts for the height-weight correlation.
-```
-
-When to use Mahalanobis distance:
-- Outlier detection (points with large Mahalanobis distance from the mean are outliers)
-- Classification when features have different scales and correlations
-- When you have enough data to estimate a reliable covariance matrix
-- Quality control in manufacturing (multivariate process monitoring)
-
-### Jaccard Similarity (for sets)
-
-Jaccard similarity measures overlap between two sets.
+直观理解：马氏距离首先对数据进行去相关和归一化（白化），然后在该变换后的空间中计算 L2 距离。如果 S 是单位矩阵（不相关、单位方差特征），马氏距离就退化为欧几里得距离。
 
 ```
-J(A, B) = |A intersect B| / |A union B|
+示例：身高和体重相关。
+一个人身高 6'2"、体重 180 磅并不奇怪。
+一个人身高 5'0"、体重 180 磅很奇怪。
+
+欧几里得距离可能会说它们离均值同样远。
+马氏距离正确地识别出第二个是离群点，
+因为它考虑了身高-体重的相关性。
 ```
 
-It ranges from 0 (no overlap) to 1 (identical sets). Jaccard distance = 1 - Jaccard similarity.
+何时使用马氏距离：
+- 离群点检测（远离均值的马氏距离大的点是离群点）
+- 当特征具有不同尺度和相关性时的分类
+- 当你有足够的数据来估计可靠的协方差矩阵时
+- 制造质量控制（多变量过程监控）
+
+### Jaccard 相似度（用于集合）
+
+Jaccard 相似度衡量两个集合之间的重叠程度。
 
 ```
-A = {cat, dog, fish}
-B = {cat, bird, fish, snake}
-
-Intersection = {cat, fish}         size = 2
-Union = {cat, dog, fish, bird, snake}  size = 5
-
-Jaccard similarity = 2/5 = 0.4
-Jaccard distance = 0.6
+J(A, B) = |A 交 B| / |A 并 B|
 ```
 
-When to use Jaccard:
-- Comparing sets of tags, categories, or features
-- Document similarity based on word presence (not frequency)
-- Near-duplicate detection (MinHash approximation of Jaccard)
-- Comparing binary feature vectors (presence/absence data)
-- Evaluating segmentation models (Intersection over Union = Jaccard)
+范围从 0（无重叠）到 1（集合相同）。Jaccard 距离 = 1 - Jaccard 相似度。
 
-### Edit Distance (Levenshtein Distance)
+```
+A = {猫, 狗, 鱼}
+B = {猫, 鸟, 鱼, 蛇}
 
-Edit distance counts the minimum number of single-character operations needed to transform one string into another. The operations are: insert, delete, or substitute.
+交集 = {猫, 鱼}         大小 = 2
+并集 = {猫, 狗, 鱼, 鸟, 蛇}  大小 = 5
+
+Jaccard 相似度 = 2/5 = 0.4
+Jaccard 距离 = 0.6
+```
+
+何时使用 Jaccard：
+- 比较标签、类别或特征的集合
+- 基于词存在性（而非频率）的文档相似度
+- 近似重复检测（Jaccard 的 MinHash 近似）
+- 比较二进制特征向量（存在/不存在数据）
+- 评估分割模型（交并比 = Jaccard）
+
+### 编辑距离（莱文斯坦距离）
+
+编辑距离计算将一个字符串转换为另一个字符串所需的最少单字符操作次数。操作包括：插入、删除或替换。
 
 ```
 "kitten" -> "sitting"
 
-kitten -> sitten  (substitute k -> s)
-sitten -> sittin  (substitute e -> i)
-sittin -> sitting (insert g)
+kitten -> sitten  （替换 k 为 s）
+sitten -> sittin  （替换 e 为 i）
+sittin -> sitting（插入 g）
 
-Edit distance = 3
+编辑距离 = 3
 ```
 
-Computed using dynamic programming. Fill a matrix where entry (i, j) is the edit distance between the first i characters of string A and the first j characters of string B.
+使用动态规划计算。填充一个矩阵，其中条目 (i, j) 是字符串 A 的前 i 个字符与字符串 B 的前 j 个字符之间的编辑距离。
 
 ```
         ""  s  i  t  t  i  n  g
@@ -276,170 +276,165 @@ Computed using dynamic programming. Fill a matrix where entry (i, j) is the edit
     n    6  6  5  4  3  3  2  3
 ```
 
-When to use edit distance:
-- Spell checking and correction
-- DNA sequence alignment (with weighted operations)
-- Fuzzy string matching
-- Deduplication of messy text data
+何时使用编辑距离：
+- 拼写检查和纠正
+- DNA 序列比对（使用加权操作）
+- 模糊字符串匹配
+- 杂乱文本数据的去重
 
-### KL Divergence (not a distance, but used like one)
+### KL 散度（不是距离，但被当作距离使用）
 
-KL divergence measures how one probability distribution differs from another. Covered in Lesson 09, but it belongs in this discussion because people use it as a "distance" despite it not being one.
+KL 散度衡量一个概率分布与另一个概率分布的差异。在第 09 课中介绍过，但它属于这里的讨论，因为人们尽管它不是距离，却把它当作"距离"使用。
 
 ```
 D_KL(P || Q) = sum(p(x) * log(p(x) / q(x)))
 ```
 
-Critical property: KL divergence is NOT symmetric.
+关键性质：KL 散度不是对称的。
 
 ```
 D_KL(P || Q) != D_KL(Q || P)
 ```
 
-This means it fails the basic requirement of a distance metric. It also does not satisfy the triangle inequality. It is a divergence, not a distance.
+这意味着它不满足距离度量的基本要求。它也不满足三角不等式。它是一个散度，而不是一个距离。
 
-Forward KL (D_KL(P || Q)) is "mean-seeking": Q tries to cover all modes of P.
-Reverse KL (D_KL(Q || P)) is "mode-seeking": Q focuses on a single mode of P.
+前向 KL（D_KL(P || Q)）是"均值寻求"：Q 试图覆盖 P 的所有模式。
+反向 KL（D_KL(Q || P)）是"模式寻求"：Q 专注于 P 的单个模式。
 
-When you see KL divergence:
-- VAEs (the KL term in the ELBO pushes the latent distribution toward a prior)
-- Knowledge distillation (student tries to match teacher's distribution)
-- RLHF (the KL penalty keeps the fine-tuned model close to the base model)
-- Policy gradient methods (constraining policy updates)
+当你看到 KL 散度时：
+- VAE（ELBO 中的 KL 项将潜在分布推向先验分布）
+- 知识蒸馏（学生试图匹配教师的分布）
+- RLHF（KL 惩罚使微调后的模型接近基座模型）
+- 策略梯度方法（约束策略更新）
 
-### Wasserstein Distance (Earth Mover's Distance)
+### Wasserstein 距离（推土机距离）
 
-Wasserstein distance measures the minimum "work" needed to transform one probability distribution into another. Think of it as: if one distribution is a pile of dirt and the other is a hole, how much dirt do you have to move and how far?
+Wasserstein 距离衡量将一个概率分布变换为另一个概率分布所需的最小"功"。可以这样想：如果一个分布是一堆土，另一个是一个坑，你需要移动多少土以及移动多远？
 
 ```
-W(P, Q) = inf over all transport plans gamma of E[d(x, y)]
+W(P, Q) = 所有运输方案 gamma 的 inf E[d(x, y)]
 ```
 
-For 1D distributions, it simplifies to the integral of the absolute difference of the cumulative distribution functions:
+对于一维分布，它简化为累积分布函数绝对差值的积分：
 
 ```
 W_1(P, Q) = integral |CDF_P(x) - CDF_Q(x)| dx
 ```
 
-Why Wasserstein matters:
-- It is a true metric (symmetric, satisfies triangle inequality)
-- It provides gradients even when distributions do not overlap (KL divergence goes to infinity)
-- This property made it central to Wasserstein GANs (WGANs), which solved the training instability of original GANs
+为什么 Wasserstein 很重要：
+- 它是一个真正的度量（对称、满足三角不等式）
+- 即使分布不重叠，它也能提供梯度（KL 散度会变成无穷大）
+- 这一特性使其成为 Wasserstein GAN（WGAN）的核心，解决了原始 GAN 的训练不稳定问题
 
 ```
-Distributions with no overlap:
+没有重叠的分布：
 
 P: [1, 0, 0, 0, 0]    Q: [0, 0, 0, 0, 1]
 
-KL divergence: infinity (log of zero)
-Wasserstein: 4 (move all mass 4 bins)
+KL 散度：无穷大（log(0)）
+Wasserstein：4（将所有质量移动 4 个箱子）
 
-Wasserstein gives a meaningful gradient. KL does not.
+Wasserstein 提供了有意义的梯度。KL 不能。
 ```
 
-When to use Wasserstein:
-- GAN training (WGAN, WGAN-GP)
-- Comparing distributions that may not overlap
-- Optimal transport problems
-- Image retrieval (comparing color histograms)
+何时使用 Wasserstein：
+- GAN 训练（WGAN、WGAN-GP）
+- 比较可能不重叠的分布
+- 最优运输问题
+- 图像检索（比较颜色直方图）
 
-### Why Different Tasks Need Different Distances
+### 为什么不同任务需要不同距离
 
-| Task | Best distance | Why |
-|------|--------------|-----|
-| Text similarity | Cosine | Magnitude is noise, direction is meaning |
-| Image pixel comparison | L2 | Spatial relationships matter, features are comparable scale |
-| Sparse high-dim features | L1 | Robust, does not amplify rare large differences |
-| Set overlap (tags, categories) | Jaccard | Data is naturally set-valued, not vectorial |
-| String matching | Edit distance | Operations map to human editing intuition |
-| Outlier detection | Mahalanobis | Accounts for feature correlations and scales |
-| Comparing distributions | KL divergence | Measures information lost by using Q instead of P |
-| GAN training | Wasserstein | Provides gradients even when distributions do not overlap |
-| Embeddings (vector DB) | Cosine or dot product | Embeddings are trained to encode meaning in direction |
-| Recommendation | Dot product | Magnitude can encode popularity or confidence |
-| DNA sequences | Weighted edit distance | Substitution costs vary by nucleotide pair |
-| Manufacturing QC | L-infinity | Worst-case deviation in any dimension matters |
+| 任务 | 最佳距离 | 原因 |
+|------|----------|------|
+| 文本相似度 | 余弦 | 大小是噪声，方向是意义 |
+| 图像像素比较 | L2 | 空间关系重要，特征尺度可比 |
+| 稀疏高维特征 | L1 | 鲁棒，不会放大罕见的巨大差异 |
+| 集合重叠（标签、类别） | Jaccard | 数据本质上是集合值，不是向量 |
+| 字符串匹配 | 编辑距离 | 操作映射到人类编辑直觉 |
+| 离群点检测 | 马氏距离 | 考虑特征相关性和尺度 |
+| 比较分布 | KL 散度 | 衡量使用 Q 代替 P 所损失的信息 |
+| GAN 训练 | Wasserstein | 即使分布不重叠也提供梯度 |
+| 嵌入（向量数据库） | 余弦或点积 | 嵌入被训练为在方向中编码意义 |
+| 推荐系统 | 点积 | 大小可以编码流行度或置信度 |
+| DNA 序列 | 加权编辑距离 | 替换成本因碱基对而异 |
+| 制造质量控制 | L-无穷 | 任何维度的最坏情况偏差都重要 |
 
-### Connection to Loss Functions
+### 与损失函数的联系
 
-Loss functions are distance functions applied to predictions vs targets.
-
-```
-Loss function       Distance it uses       Behavior
-MSE                 L2 squared             Penalizes large errors heavily
-MAE                 L1                     Penalizes all errors equally
-Huber loss          L1 for large errors,   Best of both: robust to outliers,
-                    L2 for small errors    smooth gradient near zero
-Cross-entropy       KL divergence          Measures distribution mismatch
-Hinge loss          max(0, margin - d)     Only penalizes below margin
-Triplet loss        L2 (typically)         Pulls positives close, pushes
-                                           negatives away
-Contrastive loss    L2                     Similar pairs close, dissimilar
-                                           pairs beyond margin
-```
-
-### Connection to Regularization
-
-Regularization adds a norm penalty on the weights to the loss function.
+损失函数是应用于预测值与目标值的距离函数。
 
 ```
-L1 regularization (Lasso):   loss + lambda * ||w||_1
-  -> Sparse weights. Some weights become exactly zero.
-  -> Automatic feature selection.
-  -> Solution has corners (non-differentiable at zero).
-
-L2 regularization (Ridge):   loss + lambda * ||w||_2^2
-  -> Small weights. All weights shrink toward zero.
-  -> No feature selection (nothing goes to exactly zero).
-  -> Smooth solution everywhere.
-
-Elastic Net:                  loss + lambda_1 * ||w||_1 + lambda_2 * ||w||_2^2
-  -> Combines sparsity of L1 with stability of L2.
-  -> Groups of correlated features are kept or dropped together.
+损失函数       使用的距离       行为
+MSE            L2 平方          重罚大误差
+MAE            L1               平等惩罚所有误差
+Huber 损失     大误差用 L1，     两全其美：对离群值鲁棒，
+               小误差用 L2       在零附近梯度平滑
+交叉熵         KL 散度          衡量分布不匹配
+合页损失       max(0, margin - d)  只惩罚低于边界的样本
+三元组损失     L2（通常）        拉近正样本，推远负样本
+对比损失       L2               相似样本靠近，不相似样本远离边界
 ```
 
-Why L1 produces sparsity but L2 does not: picture the constraint region in 2D weight space. L1 is a diamond, L2 is a circle. The loss function's contours (ellipses) are most likely to touch the diamond at a corner, where one weight is zero. They touch the circle at a smooth point, where both weights are nonzero.
+### 与正则化的联系
 
-### Nearest Neighbor Search
-
-Every distance function implies a nearest neighbor search problem: given a query point, find the closest points in a dataset.
-
-Exact nearest neighbor search is O(n * d) per query in a dataset of n points with d dimensions. For large datasets, this is too slow.
-
-Approximate Nearest Neighbor (ANN) algorithms trade a small amount of accuracy for massive speed gains:
+正则化在损失函数中加入权重的范数惩罚。
 
 ```
-Algorithm         Approach                      Used by
-KD-trees          Axis-aligned space partition   scikit-learn (low-dim)
-Ball trees        Nested hyperspheres            scikit-learn (medium-dim)
-LSH               Random hash projections        Near-duplicate detection
-HNSW              Hierarchical navigable         FAISS, Qdrant, Weaviate
-                  small-world graph
-IVF               Inverted file index with       FAISS (billion-scale)
-                  cluster-based search
-Product quant.    Compress vectors, search       FAISS (memory-constrained)
-                  in compressed space
+L1 正则化（Lasso）：   loss + lambda * ||w||_1
+  -> 稀疏权重。一些权重精确变为零。
+  -> 自动特征选择。
+  -> 解在角点上（在零处不可微）。
+
+L2 正则化（Ridge）：   loss + lambda * ||w||_2^2
+  -> 小权重。所有权重向零收缩。
+  -> 没有特征选择（没有东西精确变为零）。
+  -> 处处光滑的解。
+
+弹性网：              loss + lambda_1 * ||w||_1 + lambda_2 * ||w||_2^2
+  -> 结合了 L1 的稀疏性和 L2 的稳定性。
+  -> 相关特征组被一起保留或丢弃。
 ```
 
-HNSW (Hierarchical Navigable Small World) is the dominant algorithm in modern vector databases. It builds a multi-layer graph where each node connects to its approximate nearest neighbors. Search starts at the top layer (sparse, long jumps) and descends to the bottom layer (dense, short jumps).
+为什么 L1 产生稀疏性而 L2 不产生：想象二维权重空间中的约束区域。L1 是菱形，L2 是圆形。损失函数的等高线（椭圆）最有可能在角点接触菱形，此时一个权重为零。它们会在光滑点接触圆形，此时两个权重都非零。
 
-## Build It
+### 最近邻搜索
 
-### Step 1: All norm and distance functions
+每个距离函数都隐含一个最近邻搜索问题：给定一个查询点，在数据集中找到最近的点。
 
-See `code/distances.py` for the complete implementation. Every function is built from scratch using only basic Python math.
+在 n 个点、d 维的数据集中，每个查询的精确最近邻搜索是 O(n * d)。对于大型数据集，这太慢了。
 
-### Step 2: Same data, different distances, different neighbors
+近似最近邻（ANN）算法用少量的精度损失换取巨大的速度提升：
 
-The demo in `distances.py` creates a dataset, picks a query point, and shows how the nearest neighbor changes depending on the distance metric. The point that is "closest" under L1 may not be closest under L2 or cosine.
+```
+算法               方法                             使用者
+KD-树             轴对齐的空间划分                  scikit-learn（低维）
+球树              嵌套的超球面                      scikit-learn（中维）
+LSH               随机哈希投影                      近似重复检测
+HNSW              分层可导航小世界图                FAISS、Qdrant、Weaviate
+IVF               基于聚类的倒排索引                FAISS（十亿级别）
+乘积量化          压缩向量，在压缩空间中搜索         FAISS（内存受限）
+```
 
-### Step 3: Embedding similarity search
+HNSW（分层可导航小世界）是现代向量数据库中的主导算法。它构建一个多层图，其中每个节点连接到其近似最近邻。搜索从顶层（稀疏、长跳）开始，向下层（密集、短跳）下降。
 
-The code includes a mock embedding similarity search that finds the most similar "documents" to a query using cosine similarity vs L2 distance, showing that the rankings can differ.
+## 动手实现
 
-## Use It
+### 步骤1：所有范数和距离函数
 
-The most common practical use: finding similar items in a vector database.
+完整实现请参见 `code/distances.py`。每个函数都仅使用基本的 Python 数学库从头构建。
+
+### 步骤2：相同数据、不同距离、不同邻居
+
+`distances.py` 中的演示创建了一个数据集，选择一个查询点，并展示最近邻如何根据距离度量的不同而变化。在 L1 下"最近"的点在 L2 或余弦下可能不是最近的。
+
+### 步骤3：嵌入相似度搜索
+
+代码包含一个模拟的嵌入相似度搜索，使用余弦相似度与 L2 距离找到与查询最相似的"文档"，显示排名可能不同。
+
+## 使用它
+
+最常用的实际场景：在向量数据库中查找相似项。
 
 ```python
 import numpy as np
@@ -457,51 +452,65 @@ sim_matrix = cosine_similarity_matrix(embeddings)
 query_idx = 0
 similarities = sim_matrix[query_idx]
 top_k = np.argsort(similarities)[::-1][1:6]
-print(f"Top 5 most similar to item 0: {top_k}")
-print(f"Similarities: {similarities[top_k]}")
+print(f"与项目 0 最相似的 5 个: {top_k}")
+print(f"相似度: {similarities[top_k]}")
 ```
 
-When you call `model.encode(text)` and then search a vector database, this is what happens under the hood. The embedding model maps text to vectors. The vector database computes cosine similarity (or dot product) between your query vector and every stored vector, using ANN algorithms to avoid checking all of them.
+当你调用 `model.encode(text)` 然后搜索向量数据库时，这就是底层发生的事情。嵌入模型将文本映射为向量。向量数据库计算你的查询向量与每个存储向量之间的余弦相似度（或点积），使用 ANN 算法避免检查所有向量。
 
-## Exercises
+## 练习
 
-1. Compute L1, L2, and L-infinity distances between (1, 2, 3) and (4, 0, 6). Verify that L-inf <= L2 <= L1 always holds for any pair of points. Prove why this ordering is guaranteed.
+1. 计算 (1, 2, 3) 和 (4, 0, 6) 之间的 L1、L2 和 L-无穷距离。验证对于任意两点，总是有 L-无穷 <= L2 <= L1。证明为什么这个顺序是保证成立的。
 
-2. Create two vectors where cosine similarity is high (> 0.9) but L2 distance is large (> 10). Explain geometrically what is happening. Then create two vectors where cosine similarity is low (< 0.3) but L2 distance is small (< 0.5).
+2. 创建两个向量，使得余弦相似度很高（> 0.9）但 L2 距离很大（> 10）。从几何上解释发生了什么。然后创建两个向量，使得余弦相似度很低（< 0.3）但 L2 距离很小（< 0.5）。
 
-3. Implement a function that takes a dataset and a query point and returns the nearest neighbor under L1, L2, cosine, and Mahalanobis distance. Find a dataset where all four disagree on which point is nearest.
+3. 实现一个函数，接收一个数据集和一个查询点，返回在 L1、L2、余弦和马氏距离下的最近邻。找到一个数据集，使得四种度量对哪个点最近产生分歧。
 
-4. Compute the Wasserstein distance between [0.5, 0.5, 0, 0] and [0, 0, 0.5, 0.5] by hand using the CDF method. Then compute it between [0.25, 0.25, 0.25, 0.25] and [0, 0, 0.5, 0.5]. Which is larger and why?
+4. 使用 CDF 方法手动计算 [0.5, 0.5, 0, 0] 与 [0, 0, 0.5, 0.5] 之间的 Wasserstein 距离。然后计算 [0.25, 0.25, 0.25, 0.25] 与 [0, 0, 0.5, 0.5] 之间的 Wasserstein 距离。哪个更大？为什么？
 
-5. Implement MinHash for approximate Jaccard similarity. Generate 100 random sets, compute exact Jaccard for all pairs, and compare with MinHash approximation using 50, 100, and 200 hash functions. Plot the approximation error.
+5. 实现用于近似 Jaccard 相似度的 MinHash。生成 100 个随机集合，计算所有对的确切 Jaccard，并与使用 50、100 和 200 个哈希函数的 MinHash 近似进行比较。绘制近似误差图。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
+| 术语 | 人们常说的 | 实际含义 |
 |------|----------------|----------------------|
-| Norm | "Size of a vector" | A function that maps a vector to a non-negative scalar, satisfying triangle inequality, absolute homogeneity, and zero only for the zero vector |
-| L1 norm | "Manhattan distance" | Sum of absolute component values. Produces sparsity in optimization. Robust to outliers |
-| L2 norm | "Euclidean distance" | Square root of sum of squared components. The straight-line distance in Euclidean space |
-| Lp norm | "Generalized norm" | The p-th root of the sum of p-th powers of absolute components. L1 and L2 are special cases |
-| L-infinity norm | "Max norm" or "Chebyshev distance" | The maximum absolute component value. The limit of Lp as p approaches infinity |
-| Cosine similarity | "Angle between vectors" | Dot product normalized by both magnitudes. Ranges from -1 to +1. Ignores vector length |
-| Cosine distance | "1 minus cosine similarity" | Converts cosine similarity to a distance. Ranges from 0 to 2 |
-| Dot product | "Unnormalized cosine" | Sum of component-wise products. Equals cosine similarity times both magnitudes |
-| Mahalanobis distance | "Correlation-aware distance" | L2 distance in a space that has been whitened (decorrelated and normalized) using the data covariance matrix |
-| Jaccard similarity | "Set overlap" | Size of intersection divided by size of union. For sets, not vectors |
-| Edit distance | "Levenshtein distance" | Minimum insertions, deletions, and substitutions to transform one string into another |
-| KL divergence | "Distance between distributions" | Not a true distance (not symmetric). Measures extra bits from using Q to encode P |
-| Wasserstein distance | "Earth mover's distance" | Minimum work to transport mass from one distribution to another. A true metric |
-| Approximate nearest neighbor | "ANN search" | Algorithms (HNSW, LSH, IVF) that find approximately closest points much faster than exact search |
-| HNSW | "The vector DB algorithm" | Hierarchical Navigable Small World graph. Multi-layer graph for fast approximate nearest neighbor search |
-| L1 regularization | "Lasso" | Adding the L1 norm of weights to the loss. Drives weights to zero (sparsity) |
-| L2 regularization | "Ridge" or "weight decay" | Adding the squared L2 norm of weights to the loss. Shrinks weights toward zero without sparsity |
-| Elastic Net | "L1 + L2" | Combines L1 and L2 regularization. Handles correlated feature groups better than either alone |
+| 范数 | "向量的大小" | 一个将向量映射到非负标量的函数，满足三角不等式、绝对齐次性，且仅当零向量时为零 |
+| L1 范数 | "曼哈顿距离" | 各分量绝对值之和。在优化中产生稀疏性。对离群值鲁棒 |
+| L2 范数 | "欧几里得距离" | 各分量平方和的平方根。欧几里得空间中的直线距离 |
+| Lp 范数 | "广义范数" | 各分量绝对值的 p 次方之和的 p 次方根。L1 和 L2 是特例 |
+| L-无穷范数 | "最大范数"或"切比雪夫距离" | 最大绝对值分量。p 趋近无穷时 Lp 范数的极限 |
+| 余弦相似度 | "向量之间的角度" | 点积除以两个模长。范围从 -1 到 +1。忽略向量长度 |
+| 余弦距离 | "1 减余弦相似度" | 将余弦相似度转换为距离。范围从 0 到 2 |
+| 点积 | "未归一化的余弦" | 逐分量乘积之和。等于余弦相似度乘以两个模长 |
+| 马氏距离 | "考虑相关性的距离" | 在使用数据协方差矩阵进行白化（去相关和归一化）后的空间中的 L2 距离 |
+| Jaccard 相似度 | "集合重叠度" | 交集大小除以并集大小。用于集合，而非向量 |
+| 编辑距离 | "莱文斯坦距离" | 将一个字符串转换为另一个所需的最少插入、删除和替换操作数 |
+| KL 散度 | "分布之间的距离" | 不是真正的距离（不对称）。衡量使用 Q 编码 P 所需的额外比特数 |
+| Wasserstein 距离 | "推土机距离" | 将质量从一个分布运送到另一个分布所需的最小功。是一个真正的度量 |
+| 近似最近邻 | "ANN 搜索" | 比精确搜索快得多的找到近似最近点的算法（HNSW、LSH、IVF） |
+| HNSW | "向量数据库算法" | 分层可导航小世界图。用于快速近似最近邻搜索的多层图 |
+| L1 正则化 | "Lasso" | 在损失中加入权重的 L1 范数。驱使权重变为零（稀疏性） |
+| L2 正则化 | "Ridge"或"权重衰减" | 在损失中加入权重的 L2 范数平方。将权重向零收缩，但不产生稀疏性 |
+| 弹性网 | "L1 + L2" | 结合 L1 和 L2 正则化。比单独使用任一方法更好地处理相关特征组 |
 
-## Further Reading
+## 延伸阅读
 
-- [FAISS: A Library for Efficient Similarity Search](https://github.com/facebookresearch/faiss) - Meta's library for billion-scale ANN search
-- [Wasserstein GAN (Arjovsky et al., 2017)](https://arxiv.org/abs/1701.07875) - the paper that introduced Earth Mover's distance to GANs
-- [Locality-Sensitive Hashing (Indyk & Motwani, 1998)](https://dl.acm.org/doi/10.1145/276698.276876) - foundational ANN algorithm
-- [Efficient Estimation of Word Representations (Mikolov et al., 2013)](https://arxiv.org/abs/1301.3781) - Word2Vec, where cosine similarity became the default for embeddings
-- [sklearn.neighbors documentation](https://scikit-learn.org/stable/modules/neighbors.html) - practical guide to distance metrics and neighbor algorithms in scikit-learn
+- [FAISS: A Library for Efficient Similarity Search](https://github.com/facebookresearch/faiss) —— Meta 用于十亿级别 ANN 搜索的库
+- [Wasserstein GAN (Arjovsky et al., 2017)](https://arxiv.org/abs/1701.07875) —— 将推土机距离引入 GAN 的论文
+- [Locality-Sensitive Hashing (Indyk & Motwani, 1998)](https://dl.acm.org/doi/10.1145/276698.276876) —— 奠基性的 ANN 算法
+- [Efficient Estimation of Word Representations (Mikolov et al., 2013)](https://arxiv.org/abs/1301.3781) —— Word2Vec，余弦相似度在此成为嵌入的默认选择
+- [sklearn.neighbors documentation](https://scikit-learn.org/stable/modules/neighbors.html) —— scikit-learn 中距离度量和邻域算法的实用指南
+
+## 问题
+1. 推荐效果不好
+点积推荐效果不好的主要原因（按可能性排序）：
+
+| 原因 | 表现 | 快速检验方法 |
+|------|------|--------------|
+| 未归一化，模长主导 | 推荐结果偏向热门物品/活跃用户 | 比较点积与余弦的排名相关性 |
+| 嵌入维度间交互不足（线性假设） | 召回率低，复杂度高的模型可提升 | 尝试双塔 + MLP |
+| 正负样本不平衡 | AUC 正常但推荐列表重复 | 检查负采样策略 |
+| 数值溢出 | 训练 NaN | 检查点积数值范围 |
+| 评测指标与训练目标不一致 | 离线损失下降，在线指标未变 | 统一使用余弦或点积+归一化 |
+
+通常，**第一步是尝试对用户和物品向量做 L2 归一化，然后计算点积（等价于余弦）**。这是最简单且最有效的修复，也是很多现代推荐系统（如 YouTube 双塔）的默认做法。

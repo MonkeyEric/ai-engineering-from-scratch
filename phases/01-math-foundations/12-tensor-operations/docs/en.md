@@ -1,113 +1,113 @@
-# Tensor Operations
+# 张量运算
 
-> Tensors are the common language between data and deep learning. Every image, every sentence, every gradient flows through them.
+> 张量是数据与深度学习之间的共同语言。每一张图像、每一个句子、每一个梯度都流经它们。
 
-**Type:** Build
-**Language:** Python
-**Prerequisites:** Phase 1, Lessons 01 (Linear Algebra Intuition), 02 (Vectors, Matrices & Operations)
-**Time:** ~90 minutes
+**类型：** 构建
+**语言：** Python
+**前置要求：** 阶段1，第01课（线性代数直觉）、第02课（向量、矩阵与运算）
+**时间：** 约90分钟
 
-## Learning Objectives
+## 学习目标
 
-- Implement a tensor class with shape, strides, reshape, transpose, and element-wise operations from scratch
-- Apply broadcasting rules to operate on tensors of different shapes without copying data
-- Write einsum expressions for dot products, matrix multiplications, outer products, and batched operations
-- Trace the exact tensor shapes through every step of multi-head attention
+- 从零实现一个包含形状、步长、重塑、转置和逐元素运算的张量类
+- 应用广播规则对不同形状的张量进行运算，且不复制数据
+- 为点积、矩阵乘法、外积和批量运算编写einsum表达式
+- 追踪多头注意力中每一步的确切张量形状
 
-## The Problem
+## 问题描述
 
-You build a transformer. The forward pass looks clean. You run it and get: `RuntimeError: mat1 and mat2 shapes cannot be multiplied (32x768 and 512x768)`. You stare at the shapes. You try a transpose. Now it says `Expected 4D input (got 3D input)`. You add an unsqueeze. Something else breaks.
+你在构建一个Transformer。前向传播看起来很清晰。运行后却得到：`RuntimeError: mat1 and mat2 shapes cannot be multiplied (32x768 and 512x768)`。你盯着这些形状。尝试了转置。现在它显示 `Expected 4D input (got 3D input)`。你加了一个unsqueeze。然后又出了别的问题。
 
-Shape errors are the most common bug in deep learning code. They are not hard conceptually -- each operation has a shape contract -- but they multiply fast. A transformer has dozens of reshapes, transposes, and broadcasts chained together. One wrong axis and the error cascades. Worse, some shape mistakes do not throw errors at all. They silently produce garbage by broadcasting along the wrong dimension or summing over the wrong axis.
+形状错误是深度学习代码中最常见的bug。它们在概念上并不难——每个操作都有形状契约——但错误会迅速蔓延。一个Transformer有几十个重塑、转置和广播操作串联在一起。弄错一个轴，错误就会级联放大。更糟糕的是，有些形状错误根本不会抛出异常。它们会通过错误的维度广播或对错误的轴求和，静默地产生垃圾结果。
 
-Matrices handle pairwise relationships between two sets of things. Real data does not fit into two dimensions. A batch of 32 RGB images at 224x224 is a 4D tensor: `(32, 3, 224, 224)`. Self-attention with 12 heads is also 4D: `(batch, heads, seq_len, head_dim)`. You need a data structure that generalizes to any number of dimensions, with operations that compose cleanly across all of them. That structure is the tensor. Master its operations and shape errors become trivially debuggable.
+矩阵处理两个集合之间的成对关系。真实数据并不局限于两个维度。一批32张224x224的RGB图像是一个4D张量：`(32, 3, 224, 224)`。具有12个头的自注意力也是4D的：`(batch, heads, seq_len, head_dim)`。你需要一种能推广到任意维度数的数据结构，并且其操作能在所有维度上干净地组合。这种结构就是张量。掌握它的运算之后，形状错误就会变得极易调试。
 
-## The Concept
+## 核心概念
 
-### What a tensor is
+### 什么是张量
 
-A tensor is a multi-dimensional array of numbers with a uniform data type. The number of dimensions is the **rank** (or **order**). Each dimension is an **axis**. The **shape** is a tuple listing the size along each axis.
+张量是一个具有统一数据类型的多维数组。维度的数量称为**秩**（或**阶**）。每个维度称为一个**轴**。**形状**是一个元组，列出了每个轴上的大小。
 
 ```mermaid
 graph LR
-    S["Scalar<br/>rank 0<br/>shape: ()"] --> V["Vector<br/>rank 1<br/>shape: (3,)"]
-    V --> M["Matrix<br/>rank 2<br/>shape: (2,3)"]
-    M --> T3["3D Tensor<br/>rank 3<br/>shape: (2,2,2)"]
-    T3 --> T4["4D Tensor<br/>rank 4<br/>shape: (B,C,H,W)"]
+    S["标量<br/>秩0<br/>形状: ()"] --> V["向量<br/>秩1<br/>形状: (3,)"]
+    V --> M["矩阵<br/>秩2<br/>形状: (2,3)"]
+    M --> T3["3D张量<br/>秩3<br/>形状: (2,2,2)"]
+    T3 --> T4["4D张量<br/>秩4<br/>形状: (B,C,H,W)"]
 ```
 
-Total elements = product of all sizes. A shape `(2, 3, 4)` holds `2 * 3 * 4 = 24` elements.
+总元素数 = 所有大小的乘积。形状 `(2, 3, 4)` 包含 `2 * 3 * 4 = 24` 个元素。
 
-### Tensor shapes in deep learning
+### 深度学习中的张量形状
 
-Different data types map to specific tensor shapes by convention.
+按照惯例，不同的数据类型映射到特定的张量形状。
 
 ```mermaid
 graph TD
-    subgraph Vision
+    subgraph 视觉
         V1["(B, C, H, W)<br/>32, 3, 224, 224"]
     end
-    subgraph NLP
+    subgraph 自然语言处理
         N1["(B, T, D)<br/>16, 128, 768"]
     end
-    subgraph Attention
+    subgraph 注意力
         A1["(B, H, T, D)<br/>16, 12, 128, 64"]
     end
-    subgraph Weights
-        W1["Linear: (out, in)<br/>Conv2D: (out_c, in_c, kH, kW)<br/>Embedding: (vocab, dim)"]
+    subgraph 权重
+        W1["线性层: (out, in)<br/>Conv2D: (out_c, in_c, kH, kW)<br/>嵌入层: (vocab, dim)"]
     end
 ```
 
-PyTorch uses NCHW (channels-first). TensorFlow defaults to NHWC (channels-last). Mismatched layouts cause silent slowdowns or errors.
+PyTorch 使用 NCHW（通道优先）。TensorFlow 默认使用 NHWC（通道最后）。布局不匹配会导致静默的性能下降或错误。
 
-### How memory layout works
+### 内存布局如何工作
 
-A 2D array in memory is a 1D sequence of bytes. **Strides** tell you how many elements to skip to move one step along each axis.
+内存中的二维数组是一个一维的字节序列。**步长**告诉你：要沿着某个轴移动一步，需要跳过多少个元素。
 
 ```mermaid
 graph LR
-    subgraph "Row-major (C order)"
-        R["a b c d e f<br/>strides: (3, 1)"]
+    subgraph "行优先（C顺序）"
+        R["a b c d e f<br/>步长: (3, 1)"]
     end
-    subgraph "Column-major (F order)"
-        C["a d b e c f<br/>strides: (1, 2)"]
+    subgraph "列优先（F顺序）"
+        C["a d b e c f<br/>步长: (1, 2)"]
     end
 ```
 
-Transpose does not move data. It swaps the strides, making the tensor **non-contiguous** -- the elements for a row are no longer adjacent in memory.
+转置不会移动数据。它交换步长，使得张量变成**非连续的**——此时一行的元素在内存中不再相邻。
 
-### Broadcasting rules
+### 广播规则
 
-Broadcasting lets you operate on tensors of different shapes without copying data. Align shapes from the right. Two dimensions are compatible when they are equal or one is 1. Fewer dimensions get padded with 1s on the left.
+广播让你可以在不复制数据的情况下对不同形状的张量进行运算。从右向左对齐形状。当两个维度相等或其中一个为1时，它们是兼容的。维度较少的张量会在左侧用1补齐。
 
 ```
-Tensor A:     (8, 1, 6, 1)
-Tensor B:        (7, 1, 5)
-Padded B:     (1, 7, 1, 5)
-Result:       (8, 7, 6, 5)
+张量 A:     (8, 1, 6, 1)
+张量 B:        (7, 1, 5)
+补齐后 B:   (1, 7, 1, 5)
+结果:       (8, 7, 6, 5)
 ```
 
-### Einsum: the universal tensor operation
+### Einsum：通用的张量运算
 
-Einstein summation labels each axis with a letter. Axes in the input but not the output get summed. Axes in both are kept.
+爱因斯坦求和约定用字母标记每个轴。出现在输入但未出现在输出中的轴会被求和。同时出现在两个输入中的轴会被保留。
 
 ```mermaid
 graph LR
-    subgraph "matmul: ik,kj -> ij"
-        A["A(I,K)"] --> |"sum over k"| C["C(I,J)"]
-        B["B(K,J)"] --> |"sum over k"| C
+    subgraph "矩阵乘法: ik,kj -> ij"
+        A["A(I,K)"] --> |"对 k 求和"| C["C(I,J)"]
+        B["B(K,J)"] --> |"对 k 求和"| C
     end
 ```
 
-Key patterns: `i,i->` (dot product), `i,j->ij` (outer product), `ii->` (trace), `ij->ji` (transpose), `bij,bjk->bik` (batch matmul), `bhtd,bhsd->bhts` (attention scores).
+关键模式：`i,i->`（点积）、`i,j->ij`（外积）、`ii->`（迹）、`ij->ji`（转置）、`bij,bjk->bik`（批量矩阵乘法）、`bhtd,bhsd->bhts`（注意力分数）。
 
-## Build It
+## 动手实现
 
-The code lives in `code/tensors.py`. Each step references the implementation there.
+代码位于 `code/tensors.py`。每个步骤都引用了其中的实现。
 
-### Step 1: Tensor storage and strides
+### 步骤1：张量存储与步长
 
-A tensor stores a flat list of numbers plus shape metadata. Strides tell the indexing logic how to map multi-dimensional indices to flat positions.
+张量存储一个扁平的数值列表以及形状元数据。步长告诉索引逻辑如何将多维索引映射到扁平位置。
 
 ```python
 class Tensor:
@@ -141,11 +141,11 @@ class Tensor:
         return tuple(strides)
 ```
 
-For shape `(3, 4)`, strides are `(4, 1)` -- skip 4 elements to advance one row, skip 1 element to advance one column.
+对于形状 `(3, 4)`，步长是 `(4, 1)` —— 前进一行需要跳过4个元素，前进一列需要跳过1个元素。
 
-### Step 2: Reshape, squeeze, unsqueeze
+### 步骤2：重塑、挤压、解挤压
 
-Reshape changes the shape without changing element order. The total number of elements must stay the same. Use `-1` for one dimension to infer its size.
+重塑在不改变元素顺序的前提下改变形状。总元素数必须保持不变。使用 `-1` 可以让该维度的大小自动推断。
 
 ```python
 t = Tensor(list(range(12)), shape=(2, 6))
@@ -153,7 +153,7 @@ r = t.reshape((3, 4))
 r = t.reshape((-1, 3))
 ```
 
-Squeeze removes axes of size 1. Unsqueeze inserts one. Unsqueezing is critical for broadcasting -- a bias vector `(D,)` added to a batch `(B, T, D)` needs unsqueezing to `(1, 1, D)`.
+`squeeze` 删除大小为1的轴。`unsqueeze` 插入一个大小为1的轴。解挤压对于广播至关重要——一个形状为 `(D,)` 的偏置向量要加到形状为 `(B, T, D)` 的批量数据上，需要先解挤压成 `(1, 1, D)`。
 
 ```python
 t = Tensor(list(range(6)), shape=(1, 3, 1, 2))
@@ -162,9 +162,9 @@ v = Tensor([1, 2, 3])
 u = v.unsqueeze(0)
 ```
 
-### Step 3: Transpose and permute
+### 步骤3：转置与重排
 
-Transpose swaps two axes. Permute reorders all axes. This is how you convert between NCHW and NHWC.
+`transpose` 交换两个轴。`permute` 重新排列所有轴。这就是在 NCHW 和 NHWC 之间转换的方法。
 
 ```python
 mat = Tensor(list(range(6)), shape=(2, 3))
@@ -174,11 +174,11 @@ t4d = Tensor(list(range(24)), shape=(1, 2, 3, 4))
 perm = t4d.permute((0, 2, 3, 1))
 ```
 
-After transpose or permute, the tensor is non-contiguous in memory. In PyTorch, `view` fails on non-contiguous tensors -- use `reshape` or call `.contiguous()` first.
+转置或重排之后，张量在内存中是非连续的。在 PyTorch 中，`view` 对非连续张量会失败——此时应使用 `reshape`，或者先调用 `.contiguous()`。
 
-### Step 4: Element-wise operations and reductions
+### 步骤4：逐元素运算与规约
 
-Element-wise ops (add, multiply, subtract) apply independently to each element and preserve shape. Reductions (sum, mean, max) collapse one or more axes.
+逐元素运算（加法、乘法、减法）独立应用于每个元素，并保持形状不变。规约操作（求和、平均、最大值）会折叠一个或多个轴。
 
 ```python
 a = Tensor([[1, 2], [3, 4]])
@@ -188,11 +188,11 @@ d = a * 2
 s = a.sum(axis=0)
 ```
 
-Global average pooling in a CNN: `(B, C, H, W).mean(axis=[2, 3])` produces `(B, C)`. Sequence mean pooling in NLP: `(B, T, D).mean(axis=1)` produces `(B, D)`.
+CNN 中的全局平均池化：`(B, C, H, W).mean(axis=[2, 3])` 产生 `(B, C)`。NLP 中的序列平均池化：`(B, T, D).mean(axis=1)` 产生 `(B, D)`。
 
-### Step 5: Broadcasting with NumPy
+### 步骤5：使用 NumPy 演示广播
 
-The `demo_broadcasting_numpy()` function in `tensors.py` shows the core patterns.
+`tensors.py` 中的 `demo_broadcasting_numpy()` 函数展示了核心模式。
 
 ```python
 activations = np.random.randn(4, 3)
@@ -208,11 +208,11 @@ b = np.array([10, 20, 30, 40]).reshape(1, -1)
 outer = a * b
 ```
 
-Pairwise distance via broadcasting: reshape `(M, 2)` to `(M, 1, 2)` and `(N, 2)` to `(1, N, 2)`, subtract, square, sum along last axis, take square root. Result: `(M, N)`.
+通过广播计算成对距离：将 `(M, 2)` 重塑为 `(M, 1, 2)`，将 `(N, 2)` 重塑为 `(1, N, 2)`，相减、平方、沿最后一维求和、再开平方根。结果形状为 `(M, N)`。
 
-### Step 6: Einsum operations
+### 步骤6：Einsum 运算
 
-The `demo_einsum()` and `demo_einsum_gallery()` functions walk through every common pattern.
+`demo_einsum()` 和 `demo_einsum_gallery()` 函数演示了每一种常见模式。
 
 ```python
 a = np.array([1.0, 2.0, 3.0])
@@ -228,11 +228,11 @@ batch_B = np.random.randn(4, 5, 2)
 batch_mm = np.einsum("bij,bjk->bik", batch_A, batch_B)
 ```
 
-The computational cost of a contraction is the product of all index sizes (kept and summed). For `bij,bjk->bik` with B=32, I=128, J=64, K=128: `32 * 128 * 64 * 128 = 33,554,432` multiply-adds.
+一次收缩运算的计算代价是所有指标大小（包括保留的和求和的）的乘积。对于 `bij,bjk->bik`，若 B=32, I=128, J=64, K=128，则计算量为 `32 * 128 * 64 * 128 = 33,554,432` 次乘加运算。
 
-### Step 7: Attention mechanism via einsum
+### 步骤7：通过 einsum 实现注意力机制
 
-The `demo_attention_einsum()` function implements multi-head attention end to end.
+`demo_attention_einsum()` 函数端到端地实现了多头注意力。
 
 ```python
 B, H, T, D = 2, 4, 8, 16
@@ -252,22 +252,22 @@ concat = attn_output.transpose(0, 2, 1, 3).reshape(B, T, E)
 output = np.einsum("bte,ek->btk", concat, W_o)
 ```
 
-Every step is a tensor operation: projection (matmul via einsum), head splitting (reshape + transpose), attention scores (batch matmul via einsum), weighted sum (batch matmul via einsum), head merging (transpose + reshape), output projection (matmul via einsum).
+每一步都是一个张量运算：投影（通过 einsum 实现矩阵乘法）、头部分割（重塑 + 转置）、注意力分数（通过 einsum 实现批量矩阵乘法）、加权求和（通过 einsum 实现批量矩阵乘法）、头部合并（转置 + 重塑）、输出投影（通过 einsum 实现矩阵乘法）。
 
-## Use It
+## 使用它
 
-### Scratch vs NumPy
+### 自实现 vs NumPy
 
-| Operation | Scratch (Tensor class) | NumPy |
+| 操作 | 自实现（Tensor 类） | NumPy |
 |---|---|---|
-| Create | `Tensor([[1,2],[3,4]])` | `np.array([[1,2],[3,4]])` |
-| Reshape | `t.reshape((3,4))` | `a.reshape(3,4)` |
-| Transpose | `t.transpose(0,1)` | `a.T` or `a.transpose(0,1)` |
-| Squeeze | `t.squeeze(0)` | `np.squeeze(a, 0)` |
-| Sum | `t.sum(axis=0)` | `a.sum(axis=0)` |
-| Einsum | N/A | `np.einsum("ij,jk->ik", a, b)` |
+| 创建 | `Tensor([[1,2],[3,4]])` | `np.array([[1,2],[3,4]])` |
+| 重塑 | `t.reshape((3,4))` | `a.reshape(3,4)` |
+| 转置 | `t.transpose(0,1)` | `a.T` 或 `a.transpose(0,1)` |
+| 挤压 | `t.squeeze(0)` | `np.squeeze(a, 0)` |
+| 求和 | `t.sum(axis=0)` | `a.sum(axis=0)` |
+| Einsum | 不适用 | `np.einsum("ij,jk->ik", a, b)` |
 
-### Scratch vs PyTorch
+### 自实现 vs PyTorch
 
 ```python
 import torch
@@ -285,56 +285,56 @@ t.transpose(0, 1).contiguous()
 torch.einsum("ik,kj->ij", A, B)
 ```
 
-PyTorch adds autograd, GPU support, and optimized BLAS kernels. The shape semantics are identical. If you understand the scratch version, PyTorch shape errors become readable.
+PyTorch 增加了自动求导、GPU 支持和优化的 BLAS 内核。形状语义是相同的。如果你理解了自实现版本，那么 PyTorch 的形状错误就变得可读了。
 
-### Every neural network layer as a tensor operation
+### 每个神经网络层都是一种张量运算
 
-| Operation | Tensor Form | Einsum |
+| 运算 | 张量形式 | Einsum |
 |---|---|---|
-| Linear layer | `Y = X @ W.T + b` | `"bd,od->bo"` + bias |
-| Attention QKV | `Q = X @ W_q` | `"btd,dh->bth"` |
-| Attention scores | `Q @ K.T / sqrt(d)` | `"bhtd,bhsd->bhts"` |
-| Attention output | `softmax(scores) @ V` | `"bhts,bhsd->bhtd"` |
-| Batch norm | `(X - mu) / sigma * gamma` | element-wise + broadcast |
-| Softmax | `exp(x) / sum(exp(x))` | element-wise + reduction |
+| 线性层 | `Y = X @ W.T + b` | `"bd,od->bo"` + 偏置 |
+| 注意力 QKV | `Q = X @ W_q` | `"btd,dh->bth"` |
+| 注意力分数 | `Q @ K.T / sqrt(d)` | `"bhtd,bhsd->bhts"` |
+| 注意力输出 | `softmax(scores) @ V` | `"bhts,bhsd->bhtd"` |
+| 批归一化 | `(X - mu) / sigma * gamma` | 逐元素 + 广播 |
+| Softmax | `exp(x) / sum(exp(x))` | 逐元素 + 规约 |
 
-## Ship It
+## 交付成果
 
-This lesson produces two reusable prompts:
+本课程产出两个可复用的提示词模板：
 
-1. **`outputs/prompt-tensor-shapes.md`** -- A systematic prompt for debugging tensor shape mismatches. Includes decision tables for every common operation (matmul, broadcast, cat, Linear, Conv2d, BatchNorm, softmax) and a fix lookup table.
+1. **`outputs/prompt-tensor-shapes.md`** —— 一个用于调试张量形状不匹配的系统性提示词模板。包含每种常见操作（矩阵乘法、广播、拼接、Linear、Conv2d、BatchNorm、softmax）的决策表以及一个修复查找表。
 
-2. **`outputs/prompt-tensor-debugger.md`** -- A step-by-step debugging prompt you paste into any AI assistant when a shape error is blocking you. Feed it the error message and your tensor shapes, get back the exact fix.
+2. **`outputs/prompt-tensor-debugger.md`** —— 一个分步调试提示词模板。当形状错误阻塞你时，将其粘贴到任何AI助手中，输入错误信息和张量形状，就能得到确切的修复方案。
 
-## Exercises
+## 练习
 
-1. **Easy -- Reshape round-trip.** Take a tensor of shape `(2, 3, 4)`. Reshape it to `(6, 4)`, then to `(24,)`, then back to `(2, 3, 4)`. Verify element order is preserved at each step by printing the flat data.
+1. **简单 —— 重塑往返。** 取一个形状为 `(2, 3, 4)` 的张量。将其重塑为 `(6, 4)`，再重塑为 `(24,)`，最后回到 `(2, 3, 4)`。通过打印扁平数据验证每一步的元素顺序都被保持。
 
-2. **Medium -- Implement broadcasting.** Extend the `Tensor` class with a `broadcast_to(shape)` method that expands dimensions of size 1 to match a target shape. Then modify `_elementwise_op` to automatically broadcast before operating. Test with shapes `(3, 1)` and `(1, 4)` producing `(3, 4)`.
+2. **中等 —— 实现广播。** 扩展 `Tensor` 类，添加一个 `broadcast_to(shape)` 方法，将大小为1的维度扩展到目标形状。然后修改 `_elementwise_op`，使其在运算前自动进行广播。用形状 `(3, 1)` 和 `(1, 4)` 测试，期望产生 `(3, 4)` 的结果。
 
-3. **Hard -- Build einsum from scratch.** Implement a basic `einsum(subscripts, *tensors)` function that handles at least: dot product (`i,i->`), matrix multiply (`ij,jk->ik`), outer product (`i,j->ij`), and transpose (`ij->ji`). Parse the subscript string, identify contracted indices, and loop over all index combinations. Compare your results against `np.einsum`.
+3. **困难 —— 从零构建 einsum。** 实现一个基本的 `einsum(subscripts, *tensors)` 函数，至少能处理：点积（`i,i->`）、矩阵乘法（`ij,jk->ik`）、外积（`i,j->ij`）和转置（`ij->ji`）。解析下标字符串，识别被收缩的指标，并循环遍历所有指标组合。将你的结果与 `np.einsum` 进行比较。
 
-4. **Hard -- Attention shape tracker.** Write a function that takes `batch_size`, `seq_len`, `embed_dim`, and `num_heads` as inputs and prints the exact shape at every step of multi-head attention: input, Q/K/V projection, head split, attention scores, softmax weights, weighted sum, head merge, output projection. Verify against the `demo_attention_einsum()` output.
+4. **困难 —— 注意力形状追踪器。** 编写一个函数，接收 `batch_size`、`seq_len`、`embed_dim` 和 `num_heads` 作为输入，并打印多头注意力中每一步的确切形状：输入、Q/K/V 投影、头部分割、注意力分数、softmax 权重、加权求和、头部合并、输出投影。与 `demo_attention_einsum()` 的输出进行验证。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|---|---|---|
-| Tensor | "A matrix but more dimensions" | A multi-dimensional array with uniform type and defined shape, strides, and operations |
-| Rank | "The number of dimensions" | The number of axes. A matrix has rank 2, not rank equal to its matrix rank |
-| Shape | "The size of the tensor" | A tuple listing the size along each axis. `(2, 3)` means 2 rows, 3 columns |
-| Stride | "How memory is laid out" | The number of elements to skip to advance one position along each axis |
-| Broadcasting | "It just works when shapes differ" | A strict set of rules: align from right, dimensions must be equal or one must be 1 |
-| Contiguous | "The tensor is normal" | Elements stored sequentially in memory with no gaps or reordering from the logical layout |
-| Einsum | "A fancy way to write matmul" | A general notation that expresses any tensor contraction, outer product, trace, or transpose in one line |
-| View | "Same as reshape" | A tensor sharing the same memory buffer but with different shape/stride metadata. Fails on non-contiguous data |
-| Contraction | "Summing over an index" | The general operation where a shared index between tensors is multiplied and summed, producing a lower-rank result |
-| NCHW / NHWC | "PyTorch vs TensorFlow format" | Memory layout conventions for image tensors. NCHW puts channels before spatial dims, NHWC puts them after |
+| 术语 | 人们常说的 | 实际含义 |
+|------|----------------|----------------------|
+| 张量 | "矩阵，但维度更多" | 一个具有统一类型、确定的形状、步长和运算的多维数组 |
+| 秩 | "维度的数量" | 轴的数量。一个矩阵的秩是2，而不是它的矩阵秩 |
+| 形状 | "张量的大小" | 一个元组，列出了每个轴上的大小。`(2, 3)` 表示2行3列 |
+| 步长 | "内存如何布局" | 沿着每个轴移动一个位置所需要跳过的元素个数 |
+| 广播 | "形状不同时它也能工作" | 一套严格的规则：从右对齐，维度要么相等，要么其中一个为1 |
+| 连续性 | "这个张量是正常的" | 元素按顺序存储在内存中，与逻辑布局相比没有间隙或重排 |
+| Einsum | "一种写矩阵乘法的花哨方式" | 一种通用记法，可以用一行表达式表示任何张量收缩、外积、迹或转置 |
+| View | "和reshape一样" | 共享相同内存缓冲区但具有不同形状/步长元数据的张量。对非连续数据会失败 |
+| 收缩 | "对某个指标求和" | 一种通用操作：张量之间共享的指标被相乘并求和，产生一个较低秩的结果 |
+| NCHW / NHWC | "PyTorch vs TensorFlow 格式" | 图像张量的内存布局约定。NCHW 将通道放在空间维度之前，NHWC 将通道放在之后 |
 
-## Further Reading
+## 延伸阅读
 
-- [NumPy Broadcasting](https://numpy.org/doc/stable/user/basics.broadcasting.html) -- The canonical rules with visual examples
-- [PyTorch Tensor Views](https://pytorch.org/docs/stable/tensor_view.html) -- When views work and when they copy
-- [einops](https://github.com/arogozhnikov/einops) -- A library that makes tensor reshaping readable and safe
-- [The Illustrated Transformer](https://jalammar.github.io/illustrated-transformer/) -- Visualizes the tensor shapes flowing through attention
-- [Einstein Summation in NumPy](https://numpy.org/doc/stable/reference/generated/numpy.einsum.html) -- Full einsum documentation with examples
+- [NumPy 广播](https://numpy.org/doc/stable/user/basics.broadcasting.html) —— 带有可视化示例的规范规则
+- [PyTorch 张量视图](https://pytorch.org/docs/stable/tensor_view.html) —— 视图何时有效，何时会复制
+- [einops](https://github.com/arogozhnikov/einops) —— 一个让张量重塑变得可读且安全的库
+- [图解 Transformer](https://jalammar.github.io/illustrated-transformer/) —— 可视化流经注意力的张量形状
+- [NumPy 中的爱因斯坦求和](https://numpy.org/doc/stable/reference/generated/numpy.einsum.html) —— 完整的 einsum 文档及示例

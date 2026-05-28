@@ -1,70 +1,70 @@
-# Numerical Stability
+# 数值稳定性
 
-> Floating point is a leaky abstraction. It will bite you during training, and you will not see it coming.
+> 浮点数是一个有漏洞的抽象。它会在训练过程中咬你一口，而你根本不会预见到它的到来。
 
-**Type:** Build
-**Language:** Python
-**Prerequisites:** Phase 1, Lessons 01-04
-**Time:** ~120 minutes
+**类型：** 构建
+**语言：** Python
+**前置要求：** 阶段1，第01-04课
+**时间：** 约120分钟
 
-## Learning Objectives
+## 学习目标
 
-- Implement numerically stable softmax and log-sum-exp using the max-subtraction trick
-- Identify overflow, underflow, and catastrophic cancellation in floating-point computations
-- Verify analytical gradients against numerical gradients using centered finite differences
-- Explain why bfloat16 is preferred over float16 for training and how loss scaling prevents gradient underflow
+- 使用最大值减法技巧实现数值稳定的 softmax 和 log-sum-exp
+- 识别浮点计算中的溢出、下溢和灾难性抵消
+- 使用中心有限差分法验证解析梯度与数值梯度的一致性
+- 解释为什么 bfloat16 比 float16 更适合训练，以及损失缩放如何防止梯度下溢
 
-## The Problem
+## 问题描述
 
-Your model trains for three hours, then the loss becomes NaN. You add a print statement. The logits are fine at step 9,000. At step 9,001 they are `inf`. By step 9,002 every gradient is `nan` and training is dead.
+你的模型训练了三个小时，然后损失变成了 NaN。你加了一个打印语句。在第 9,000 步时 logits 还正常。到第 9,001 步它们变成了 `inf`。到第 9,002 步，每个梯度都是 `nan`，训练宣告死亡。
 
-Or: your model trains to completion but accuracy is 2% worse than the paper claims. You check everything. Architecture matches. Hyperparameters match. Data matches. The problem is that the paper used float32 and you used float16 without the right scaling. Thirty-two bits of accumulated rounding error quietly ate your accuracy.
+或者：你的模型训练完成了，但准确率比论文声称的低 2%。你检查了所有东西。架构匹配。超参数匹配。数据匹配。问题是论文用了 float32，而你用了 float16 却没有正确的缩放。32 位累积的舍入误差悄悄地吞噬了你的准确率。
 
-Or: you implement cross-entropy loss from scratch. It works on small logits. When logits exceed 100, it returns `inf`. The softmax overflowed because `exp(100)` is larger than float32 can represent. Every ML framework handles this with a two-line trick. You did not know the trick existed.
+或者：你从头实现了交叉熵损失。它在小 logits 上没问题。当 logits 超过 100 时，它返回 `inf`。softmax 溢出了，因为 `exp(100)` 已经超出了 float32 的表示范围。每个机器学习框架都用一行两行的技巧处理了这个问题。而你根本不知道这个技巧存在。
 
-Numerical stability is not a theoretical concern. It is the difference between a training run that succeeds and one that silently fails. Every serious ML bug you will debug eventually comes down to floating point.
+数值稳定性不是一个理论问题。它决定了一次训练运行是成功还是静默失败。你最终会调试的每一个严重的机器学习 bug，归根结底都会落到浮点数上。
 
-## The Concept
+## 核心概念
 
-### IEEE 754: How Computers Store Real Numbers
+### IEEE 754：计算机如何存储实数
 
-Computers store real numbers as floating point values following the IEEE 754 standard. A float has three parts: a sign bit, an exponent, and a mantissa (significand).
-
-```
-Float32 layout (32 bits total):
-[1 sign] [8 exponent] [23 mantissa]
-
-Value = (-1)^sign * 2^(exponent - 127) * 1.mantissa
-```
-
-The mantissa determines precision (how many significant digits). The exponent determines range (how large or small a number can be).
+计算机按照 IEEE 754 标准将实数存储为浮点数值。一个浮点数由三部分组成：符号位、指数和尾数（有效数字）。
 
 ```
-Format     Bits   Exponent  Mantissa  Decimal digits  Range (approx)
-float64    64     11        52        ~15-16          +/- 1.8e308
-float32    32     8         23        ~7-8            +/- 3.4e38
-float16    16     5         10        ~3-4            +/- 65,504
-bfloat16   16     8         7         ~2-3            +/- 3.4e38
+Float32 布局（共 32 位）：
+[1 符号位] [8 指数位] [23 尾数位]
+
+数值 = (-1)^符号 * 2^(指数 - 127) * 1.尾数
 ```
 
-float32 gives you about 7 decimal digits of precision. That means it can tell apart 1.0000001 and 1.0000002, but not 1.00000001 and 1.00000002. After 7 digits, everything is rounding noise.
-
-float16 gives you about 3 digits. The largest number it can represent is 65,504. That is disturbingly small for ML where logits, gradients, and activations routinely exceed this.
-
-bfloat16 is Google's answer to float16's range problem. It has the same 8-bit exponent as float32 (same range, up to 3.4e38) but only 7 mantissa bits (less precision than float16). For training neural networks, range matters more than precision, so bfloat16 usually wins.
-
-### Why 0.1 + 0.2 != 0.3
-
-The number 0.1 cannot be represented exactly in binary floating point. In base 2, it is a repeating fraction:
+尾数决定了精度（多少位有效数字）。指数决定了范围（数值可以多大或多小）。
 
 ```
-0.1 in binary = 0.0001100110011001100110011... (repeating forever)
+格式      位数   指数   尾数   十进制有效数字  范围（约）
+float64    64     11     52       ~15-16        +/- 1.8e308
+float32    32     8      23       ~7-8          +/- 3.4e38
+float16    16     5      10       ~3-4          +/- 65,504
+bfloat16   16     8      7        ~2-3          +/- 3.4e38
 ```
 
-Float32 truncates this to 23 bits of mantissa. The stored value is approximately 0.100000001490116. Similarly, 0.2 is stored as approximately 0.200000002980232. Their sum is 0.300000004470348, not 0.3.
+float32 给你大约 7 位十进制精度。这意味着它能区分 1.0000001 和 1.0000002，但不能区分 1.00000001 和 1.00000002。超过 7 位之后，一切都是舍入噪声。
+
+float16 给你大约 3 位精度。它能表示的最大数值是 65,504。对于机器学习来说，这个值小得令人不安，因为 logits、梯度和激活值经常会超过这个范围。
+
+bfloat16 是谷歌针对 float16 的范围问题给出的答案。它拥有与 float32 相同的 8 位指数（相同的范围，最高 3.4e38），但只有 7 位尾数（精度比 float16 还低）。对于训练神经网络来说，范围比精度更重要，所以 bfloat16 通常胜出。
+
+### 为什么 0.1 + 0.2 != 0.3
+
+0.1 这个数字无法在二进制浮点数中精确表示。在二进制下，它是一个无限循环小数：
 
 ```
-In Python:
+0.1 的二进制 = 0.0001100110011001100110011... （无限循环）
+```
+
+float32 将其截断为 23 位尾数。存储的值大约是 0.100000001490116。类似地，0.2 存储为大约 0.200000002980232。它们的和是 0.300000004470348，而不是 0.3。
+
+```
+在 Python 中：
 >>> 0.1 + 0.2
 0.30000000000000004
 
@@ -72,334 +72,334 @@ In Python:
 False
 ```
 
-This matters for ML because:
+这对机器学习很重要，因为：
 
-1. Loss comparisons like `if loss < threshold` can give wrong answers
-2. Accumulating many small values (gradient updates over thousands of steps) drifts from the true sum
-3. Checksums and reproducibility tests fail if you compare floats with `==`
+1.  像 `if loss < threshold` 这样的损失比较可能给出错误答案
+2.  累积许多小数值（数千步的梯度更新）会偏离真实的和
+3.  如果你用 `==` 比较浮点数，校验和与可重复性测试会失败
 
-The fix: never compare floats with `==`. Use `abs(a - b) < epsilon` or `math.isclose()`.
+解决方法：永远不要用 `==` 比较浮点数。使用 `abs(a - b) < epsilon` 或 `math.isclose()`。
 
-### Catastrophic Cancellation
+### 灾难性抵消
 
-When you subtract two nearly equal floating point numbers, the significant digits cancel and you are left with rounding noise promoted to leading digits.
-
-```
-a = 1.0000001    (stored as 1.00000011920929 in float32)
-b = 1.0000000    (stored as 1.00000000000000 in float32)
-
-True difference:  0.0000001
-Computed:         0.00000011920929
-
-Relative error: 19.2%
-```
-
-That is a 19% relative error from a single subtraction. In ML, this happens whenever you:
-
-- Compute variance of data with a large mean: `E[x^2] - E[x]^2` when E[x] is large
-- Subtract nearly equal log-probabilities
-- Compute finite-difference gradients with too-small epsilon
-
-The fix: rearrange formulas to avoid subtracting large, nearly equal numbers. For variance, use the Welford algorithm or center the data first. For log-probabilities, work in log-space throughout.
-
-### Overflow and Underflow
-
-Overflow happens when a result is too large to represent. Underflow happens when it is too small (closer to zero than the smallest representable positive number).
+当你减去两个几乎相等的浮点数时，有效数字会抵消，剩下的舍入噪声被提升到高位。
 
 ```
-Float32 boundaries:
-  Maximum:  3.4028235e+38
-  Minimum positive (normal): 1.175e-38
-  Minimum positive (denorm): 1.401e-45
-  Overflow:  anything > 3.4e38 becomes inf
-  Underflow: anything < 1.4e-45 becomes 0.0
+a = 1.0000001    （在 float32 中存储为 1.00000011920929）
+b = 1.0000000    （在 float32 中存储为 1.00000000000000）
+
+真实差值：  0.0000001
+计算值：    0.00000011920929
+
+相对误差： 19.2%
 ```
 
-The `exp()` function is the primary source of overflow in ML:
+仅仅一次减法就产生了 19% 的相对误差。在机器学习中，这种情况发生在：
+
+- 计算具有大均值的数据的方差：当 E[x] 很大时，`E[x^2] - E[x]^2`
+- 减去几乎相等的对数概率
+- 使用过小的 epsilon 计算有限差分梯度
+
+解决方法：重新排列公式以避免相减两个很大的、几乎相等的数。对于方差，使用 Welford 算法或先对数据中心化。对于对数概率，始终在对数空间中计算。
+
+### 溢出和下溢
+
+溢出发生在结果太大而无法表示时。下溢发生在结果太小（比最小的可表示正数更接近零）时。
 
 ```
-exp(88.7)  = 3.40e+38   (barely fits in float32)
-exp(89.0)  = inf         (overflow)
-exp(-87.3) = 1.18e-38   (barely above underflow)
-exp(-104)  = 0.0         (underflow to zero)
+Float32 边界：
+  最大值：         3.4028235e+38
+  最小正数（常规）：1.175e-38
+  最小正数（非规约）：1.401e-45
+  溢出：           任何 > 3.4e38 的数变为 inf
+  下溢：           任何 < 1.4e-45 的数变为 0.0
 ```
 
-The `log()` function hits the other direction:
+`exp()` 函数是机器学习中溢出的主要来源：
+
+```
+exp(88.7)  = 3.40e+38   （勉强能放入 float32）
+exp(89.0)  = inf         （溢出）
+exp(-87.3) = 1.18e-38   （刚好高于下溢阈值）
+exp(-104)  = 0.0         （下溢到 0）
+```
+
+`log()` 函数则是另一方向：
 
 ```
 log(0.0)   = -inf
 log(-1.0)  = nan
-log(1e-45) = -103.3      (fine)
-log(1e-46) = -inf        (input underflowed to 0, then log(0) = -inf)
+log(1e-45) = -103.3      （正常）
+log(1e-46) = -inf        （输入已下溢为 0，然后 log(0) = -inf）
 ```
 
-In ML, `exp()` appears in softmax, sigmoid, and probability computations. `log()` appears in cross-entropy, log-likelihoods, and KL divergence. The combination `log(exp(x))` is a minefield without the right tricks.
+在机器学习中，`exp()` 出现在 softmax、sigmoid 和概率计算中。`log()` 出现在交叉熵、对数似然和 KL 散度中。如果没有正确的技巧，`log(exp(x))` 的组合就是一个雷区。
 
-### The Log-Sum-Exp Trick
+### Log-Sum-Exp 技巧
 
-Computing `log(sum(exp(x_i)))` directly is numerically dangerous. If any `x_i` is large, `exp(x_i)` overflows. If all `x_i` are very negative, every `exp(x_i)` underflows to zero and `log(0)` is `-inf`.
+直接计算 `log(sum(exp(x_i)))` 在数值上是危险的。如果任何一个 `x_i` 很大，`exp(x_i)` 就会溢出。如果所有 `x_i` 都非常负，每个 `exp(x_i)` 都会下溢为 0，然后 `log(0)` 就是 `-inf`。
 
-The trick: subtract the maximum value before exponentiating.
+技巧：在取指数之前减去最大值。
 
 ```
 log(sum(exp(x_i))) = max(x) + log(sum(exp(x_i - max(x))))
 ```
 
-Why this works: after subtracting `max(x)`, the largest exponent is `exp(0) = 1`. No overflow is possible. At least one term in the sum is 1, so the sum is at least 1, and `log(1) = 0`. No underflow to `-inf` is possible.
+为什么有效：减去 `max(x)` 之后，最大的指数项是 `exp(0) = 1`。不可能发生溢出。求和中的至少一项是 1，所以总和至少为 1，`log(1) = 0`。不可能下溢到 `-inf`。
 
-Proof:
+证明：
 
 ```
 log(sum(exp(x_i)))
-= log(sum(exp(x_i - c + c)))                    (add and subtract c)
-= log(sum(exp(x_i - c) * exp(c)))               (exp(a+b) = exp(a)*exp(b))
-= log(exp(c) * sum(exp(x_i - c)))               (factor out exp(c))
-= c + log(sum(exp(x_i - c)))                    (log(a*b) = log(a) + log(b))
+= log(sum(exp(x_i - c + c)))                    （加 c 再减 c）
+= log(sum(exp(x_i - c) * exp(c)))               （exp(a+b) = exp(a)*exp(b)）
+= log(exp(c) * sum(exp(x_i - c)))               （提取公因子 exp(c)）
+= c + log(sum(exp(x_i - c)))                    （log(a*b) = log(a) + log(b)）
 ```
 
-Set `c = max(x)` and overflow is eliminated.
+令 `c = max(x)`，溢出就被消除了。
 
-This trick appears everywhere in ML:
-- Softmax normalization
-- Cross-entropy loss computation
-- Log-probability summation in sequence models
-- Mixture of Gaussians
-- Variational inference
+这个技巧在机器学习中无处不在：
+- Softmax 归一化
+- 交叉熵损失计算
+- 序列模型中的对数概率求和
+- 高斯混合模型
+- 变分推断
 
-### Why Softmax Needs the Max-Subtraction Trick
+### 为什么 Softmax 需要最大值减法技巧
 
-Softmax converts logits to probabilities:
+Softmax 将 logits 转换为概率：
 
 ```
 softmax(x_i) = exp(x_i) / sum(exp(x_j))
 ```
 
-Without the trick, logits of [100, 101, 102] cause overflow:
+没有这个技巧，logits 如 [100, 101, 102] 会导致溢出：
 
 ```
 exp(100) = 2.69e43
 exp(101) = 7.31e43
 exp(102) = 1.99e44
-sum      = 2.99e44
+总和      = 2.99e44
 
-These overflow float32 (max ~3.4e38)? No, 2.69e43 < 3.4e38? Actually:
-exp(88.7) is already at the float32 limit.
-exp(100) = inf in float32.
+这些数会溢出 float32 吗（最大值 ~3.4e38）？等等，2.69e43 比 3.4e38 大吗？实际上：
+exp(88.7) 已经达到 float32 的极限了。
+exp(100) 在 float32 中就是 inf。
 ```
 
-With the trick, subtract max(x) = 102:
+使用技巧，减去 max(x) = 102：
 
 ```
 exp(100 - 102) = exp(-2) = 0.135
 exp(101 - 102) = exp(-1) = 0.368
 exp(102 - 102) = exp(0)  = 1.000
-sum = 1.503
+总和 = 1.503
 
 softmax = [0.090, 0.245, 0.665]
 ```
 
-The probabilities are identical. The computation is safe. This is not an optimization. It is a requirement for correctness.
+这些概率完全相同。计算是安全的。这不是一个优化技巧，而是保证正确性的必要条件。
 
-### NaN and Inf: Detection and Prevention
+### NaN 和 Inf：检测与预防
 
-`nan` (Not a Number) and `inf` (infinity) propagate virally through computation. One `nan` in a gradient update makes the weight `nan`, which makes every subsequent output `nan`. Training is dead within one step.
+`nan`（非数字）和 `inf`（无穷大）会像病毒一样在计算中传播。梯度更新中的一个 `nan` 会使得权重变成 `nan`，然后每个后续输出都是 `nan`。训练在一两步之内就死亡了。
 
-How `inf` appears:
-- `exp()` of a large positive number
-- Division by zero: `1.0 / 0.0`
-- `float32` overflow in accumulations
+`inf` 如何出现：
+- 对大正数取 `exp()`
+- 除以零：`1.0 / 0.0`
+- `float32` 累加溢出
 
-How `nan` appears:
+`nan` 如何出现：
 - `0.0 / 0.0`
 - `inf - inf`
 - `inf * 0`
-- `sqrt()` of a negative number
-- `log()` of a negative number
-- Any arithmetic involving an existing `nan`
+- 对负数取 `sqrt()`
+- 对负数取 `log()`
+- 任何涉及已有 `nan` 的算术运算
 
-Detection:
+检测：
 
 ```python
 import math
 
-math.isnan(x)       # True if x is nan
-math.isinf(x)       # True if x is +inf or -inf
-math.isfinite(x)    # True if x is neither nan nor inf
+math.isnan(x)       # 如果 x 是 nan 返回 True
+math.isinf(x)       # 如果 x 是 +inf 或 -inf 返回 True
+math.isfinite(x)    # 如果 x 既不是 nan 也不是 inf 返回 True
 ```
 
-Prevention strategies:
+预防策略：
 
-1. Clamp inputs to `exp()`: `exp(clamp(x, -80, 80))`
-2. Add epsilon to denominators: `x / (y + 1e-8)`
-3. Add epsilon inside `log()`: `log(x + 1e-8)`
-4. Use stable implementations (log-sum-exp, stable softmax)
-5. Gradient clipping to prevent weight explosion
-6. Check for `nan`/`inf` after every forward pass during debugging
+1.  钳制 `exp()` 的输入：`exp(clamp(x, -80, 80))`
+2.  分母加上 epsilon：`x / (y + 1e-8)`
+3.  在 `log()` 内部加上 epsilon：`log(x + 1e-8)`
+4.  使用稳定实现（log-sum-exp，稳定 softmax）
+5.  梯度裁剪以防止权重爆炸
+6.  调试期间在每个前向传播后检查 `nan`/`inf`
 
-### Numerical Gradient Checking
+### 数值梯度检查
 
-Analytical gradients (from backpropagation) can have bugs. Numerical gradient checking verifies them by computing gradients with finite differences.
+解析梯度（来自反向传播）可能有 bug。数值梯度检查通过有限差分计算梯度来验证它们。
 
-The centered difference formula:
+中心差分公式：
 
 ```
 df/dx ~= (f(x + h) - f(x - h)) / (2h)
 ```
 
-This is O(h^2) accurate, much better than the forward difference `(f(x+h) - f(x)) / h` which is only O(h).
+这是 O(h^2) 精度，远优于前向差分的 `(f(x+h) - f(x)) / h`（只有 O(h)）。
 
-Choosing h: too large and the approximation is wrong. Too small and catastrophic cancellation destroys the answer. `h = 1e-5` to `1e-7` is typical.
+选择 h：太大则近似不准确。太小则灾难性抵消会破坏结果。`h = 1e-5` 到 `1e-7` 是典型值。
 
-The check: compute the relative difference between analytical and numerical gradients.
+检查：计算解析梯度和数值梯度之间的相对差异。
 
 ```
 relative_error = |grad_analytical - grad_numerical| / max(|grad_analytical|, |grad_numerical|, 1e-8)
 ```
 
-Rules of thumb:
-- relative_error < 1e-7: perfect, gradient is correct
-- relative_error < 1e-5: acceptable, probably correct
-- relative_error > 1e-3: something is wrong
-- relative_error > 1: gradient is completely wrong
+经验法则：
+- relative_error < 1e-7：完美，梯度正确
+- relative_error < 1e-5：可接受，可能正确
+- relative_error > 1e-3：有问题
+- relative_error > 1：梯度完全错误
 
-Always check gradients when implementing a new layer or loss function. PyTorch provides `torch.autograd.gradcheck()` for this.
+在实现新层或损失函数时，总是检查梯度。PyTorch 为此提供了 `torch.autograd.gradcheck()`。
 
-### Mixed Precision Training
+### 混合精度训练
 
-Modern GPUs have specialized hardware (Tensor Cores) that compute float16 matrix multiplications 2-8x faster than float32. Mixed precision training exploits this:
-
-```
-1. Maintain float32 master copy of weights
-2. Forward pass in float16 (fast)
-3. Compute loss in float32 (prevents overflow)
-4. Backward pass in float16 (fast)
-5. Scale gradients to float32
-6. Update float32 master weights
-```
-
-The problem with pure float16 training: gradients are often very small (1e-8 or smaller). Float16 underflows anything below ~6e-8 to zero. Your model stops learning because all gradient updates are zero.
-
-The fix is loss scaling:
+现代 GPU 拥有专门的硬件（Tensor Cores），可以以比 float32 快 2-8 倍的速度计算 float16 矩阵乘法。混合精度训练利用了这一点：
 
 ```
-1. Multiply loss by a large scale factor (e.g., 1024)
-2. Backward pass computes gradients of (loss * 1024)
-3. All gradients are 1024x larger (pushed above float16 underflow)
-4. Divide gradients by 1024 before updating weights
-5. Net effect: same update, but no underflow
+1. 维护 float32 格式的主权重副本
+2. 前向传播使用 float16（快速）
+3. 损失计算使用 float32（防止溢出）
+4. 反向传播使用 float16（快速）
+5. 将梯度缩放到 float32
+6. 更新 float32 主权重
 ```
 
-Dynamic loss scaling adjusts the scale factor automatically. Start with a large value (65536). If gradients overflow to `inf`, halve it. If N steps pass without overflow, double it.
+纯 float16 训练的问题：梯度通常非常小（1e-8 甚至更小）。float16 会将任何低于约 6e-8 的数下溢为 0。你的模型会停止学习，因为所有的梯度更新都变成了零。
 
-### bfloat16 vs float16: Why bfloat16 Wins for Training
+解决方案是损失缩放：
 
 ```
-float16:   [1 sign] [5 exponent]  [10 mantissa]
-bfloat16:  [1 sign] [8 exponent]  [7 mantissa]
+1. 将损失乘以一个大的缩放因子（例如 1024）
+2. 反向传播计算的是 (loss * 1024) 的梯度
+3. 所有梯度都变大了 1024 倍（被推到了 float16 下溢阈值之上）
+4. 更新权重前，将梯度除以 1024
+5. 净效果：相同的更新，但没有下溢
 ```
 
-float16 has more precision (10 mantissa bits vs 7) but limited range (max ~65,504). bfloat16 has less precision but the same range as float32 (max ~3.4e38).
+动态损失缩放会自动调整缩放因子。从一个较大的值（如 65536）开始。如果梯度溢出为 `inf`，则将其减半。如果连续 N 步没有溢出，则将其加倍。
 
-For training neural networks:
+### bfloat16 vs float16：为什么 bfloat16 在训练中胜出
 
-- Activations and logits regularly exceed 65,504 during training spikes. float16 overflows; bfloat16 handles it.
-- Loss scaling is required with float16 but usually unnecessary with bfloat16 because its range covers the gradient magnitude spectrum.
-- bfloat16 is a simple truncation of float32: drop the bottom 16 bits of the mantissa. Conversion is trivial and lossless in the exponent.
+```
+float16:   [1 符号位] [5 指数位]  [10 尾数位]
+bfloat16:  [1 符号位] [8 指数位]  [7 尾数位]
+```
 
-float16 is preferred for inference where values are bounded and precision matters more. bfloat16 is preferred for training where range matters more. This is why TPUs and modern NVIDIA GPUs (A100, H100) have native bfloat16 support.
+float16 精度更高（10 尾数位 vs 7），但范围有限（最大值约 65,504）。bfloat16 精度较低，但具有与 float32 相同的范围（最大值约 3.4e38）。
 
-### Gradient Clipping
+对于训练神经网络：
 
-Exploding gradients happen when gradients grow exponentially through many layers (common in RNNs, deep networks, and transformers). A single large gradient can corrupt all weights in one step.
+- 在训练峰值期间，激活值和 logits 经常会超过 65,504。float16 会溢出；bfloat16 可以处理。
+- float16 训练需要损失缩放，但 bfloat16 通常不需要，因为它的范围覆盖了梯度量级的整个频谱。
+- bfloat16 是 float32 的简单截断：丢弃尾数的低 16 位。转换是简单的，且指数部分无损。
 
-Two types of clipping:
+float16 更适合推理，因为推理时数值范围是受限的，精度更重要。bfloat16 更适合训练，因为训练时范围更重要。这就是为什么 TPU 和现代 NVIDIA GPU（A100, H100）拥有原生的 bfloat16 支持。
 
-**Clip by value:** clamp each gradient element independently.
+### 梯度裁剪
+
+梯度爆炸发生在梯度经过多层指数增长时（常见于 RNN、深度网络和 Transformer）。一个巨大的梯度可以在一步之内破坏所有权重。
+
+两种裁剪类型：
+
+**按值裁剪：** 独立地钳制每个梯度元素。
 
 ```
 grad = clamp(grad, -max_val, max_val)
 ```
 
-Simple but can change the direction of the gradient vector.
+简单但可能改变梯度向量的方向。
 
-**Clip by norm:** scale the entire gradient vector so its norm does not exceed a threshold.
+**按范数裁剪：** 缩放整个梯度向量，使其范数不超过阈值。
 
 ```
 if ||grad|| > max_norm:
     grad = grad * (max_norm / ||grad||)
 ```
 
-Preserves the direction of the gradient. This is what `torch.nn.utils.clip_grad_norm_()` does. It is the standard choice.
+保留了梯度的方向。这就是 `torch.nn.utils.clip_grad_norm_()` 所做的事情。这是标准选择。
 
-Typical values: `max_norm=1.0` for transformers, `max_norm=0.5` for RL, `max_norm=5.0` for simpler networks.
+典型值：Transformer 用 `max_norm=1.0`，强化学习用 `max_norm=0.5`，简单网络用 `max_norm=5.0`。
 
-Gradient clipping is not a hack. It is a safety mechanism. Without it, a single outlier batch can produce a gradient large enough to ruin weeks of training.
+梯度裁剪不是一个 hack。它是一个安全机制。没有它，一个离群的批次就可能产生足够大的梯度，毁掉数周的训练。
 
-### Normalization Layers as Numerical Stabilizers
+### 归一化层作为数值稳定器
 
-Batch normalization, layer normalization, and RMS normalization are usually presented as regularizers that help training converge. They are also numerical stabilizers.
+批归一化、层归一化和 RMS 归一化通常被描述为帮助训练收敛的正则化器。它们同时也是数值稳定器。
 
-Without normalization, activations can grow or shrink exponentially through layers:
+没有归一化，激活值可能在层间指数级增长或收缩：
 
 ```
-Layer 1: values in [0, 1]
-Layer 5: values in [0, 100]
-Layer 10: values in [0, 10,000]
-Layer 50: values in [0, inf]
+第 1 层：值在 [0, 1] 范围
+第 5 层：值在 [0, 100] 范围
+第 10 层：值在 [0, 10,000] 范围
+第 50 层：值在 [0, inf] 范围
 ```
 
-Normalization recenters and rescales activations at every layer:
+归一化在每一层重新中心化和重新缩放激活值：
 
 ```
 LayerNorm(x) = (x - mean(x)) / (std(x) + epsilon) * gamma + beta
 ```
 
-The `epsilon` (typically 1e-5) prevents division by zero when all activations are identical. The learned parameters `gamma` and `beta` let the network restore any scale it needs.
+`epsilon`（通常为 1e-5）防止当所有激活值相同时出现除零错误。可学习参数 `gamma` 和 `beta` 让网络可以恢复它所需要的任何尺度。
 
-This keeps values in a numerically safe range throughout the network, preventing both overflow in the forward pass and gradient explosion in the backward pass.
+这使数值在整个网络中保持在一个安全的范围内，既防止了前向传播中的溢出，也防止了反向传播中的梯度爆炸。
 
-### Common ML Numerical Bugs
+### 常见的机器学习数值 Bug
 
-**Bug: Loss is NaN after a few epochs.**
-Cause: logits grew too large, softmax overflowed. Or learning rate is too high and weights diverged.
-Fix: use stable softmax (max subtraction), reduce learning rate, add gradient clipping.
+**Bug：** 训练几个 epoch 后损失变为 NaN。
+**原因：** logits 变得太大，softmax 溢出。或者学习率太高，权重发散。
+**修复：** 使用稳定的 softmax（最大值减法），降低学习率，添加梯度裁剪。
 
-**Bug: Loss is stuck at log(num_classes).**
-Cause: model outputs are near-uniform probabilities. Often means gradients are vanishing or the model is not learning at all.
-Fix: check that data labels are correct, verify the loss function, check for dead ReLUs.
+**Bug：** 损失卡在 log(num_classes)。
+**原因：** 模型输出接近均匀概率。通常意味着梯度在消失，或者模型根本没有在学习。
+**修复：** 检查数据标签是否正确，验证损失函数，检查是否有死亡的 ReLU 神经元。
 
-**Bug: Validation accuracy is lower than expected by 1-3%.**
-Cause: mixed precision without proper loss scaling. Gradient underflow silently zeroes out small updates.
-Fix: enable dynamic loss scaling, or switch to bfloat16.
+**Bug：** 验证准确率比预期低 1-3%。
+**原因：** 混合精度没有使用正确的损失缩放。梯度下溢静默地将小的更新置为零。
+**修复：** 启用动态损失缩放，或者改用 bfloat16。
 
-**Bug: Gradient norms are 0.0 for some layers.**
-Cause: dead ReLU neurons (all inputs negative), or float16 underflow.
-Fix: use LeakyReLU or GELU, use gradient scaling, check weight initialization.
+**Bug：** 某些层的梯度范数为 0.0。
+**原因：** 死亡的 ReLU 神经元（所有输入为负），或者 float16 下溢。
+**修复：** 使用 LeakyReLU 或 GELU，使用梯度缩放，检查权重初始化。
 
-**Bug: Model works on one GPU but gives different results on another.**
-Cause: non-deterministic floating point accumulation order. GPU parallel reductions sum in different orders on different hardware, and floating point addition is not associative.
-Fix: accept small differences (1e-6), or set `torch.use_deterministic_algorithms(True)` and accept the speed penalty.
+**Bug：** 模型在一块 GPU 上工作，但在另一块上给出不同的结果。
+**原因：** 非确定性的浮点累加顺序。GPU 并行归约在不同硬件上以不同顺序求和，而浮点加法不满足结合律。
+**修复：** 接受小的差异（1e-6），或者设置 `torch.use_deterministic_algorithms(True)` 并接受速度损失。
 
-**Bug: `exp()` returns `inf` in loss computation.**
-Cause: raw logits passed to `exp()` without the max-subtraction trick.
-Fix: use `torch.nn.functional.log_softmax()` which implements log-sum-exp internally.
+**Bug：** 损失计算中的 `exp()` 返回 `inf`。
+**原因：** 原始 logits 没有经过最大值减法技巧就直接传入 `exp()`。
+**修复：** 使用 `torch.nn.functional.log_softmax()`，它在内部实现了 log-sum-exp。
 
-**Bug: Training diverges after switching from float32 to float16.**
-Cause: float16 cannot represent gradient magnitudes below 6e-8 or activations above 65,504.
-Fix: use mixed precision with loss scaling (AMP), or use bfloat16 instead.
+**Bug：** 从 float32 切换到 float16 后训练发散。
+**原因：** float16 无法表示低于 6e-8 的梯度幅度或高于 65,504 的激活值。
+**修复：** 使用带损失缩放的混合精度（AMP），或者改用 bfloat16。
 
-## Build It
+## 动手实现
 
-### Step 1: Demonstrate floating point precision limits
+### 步骤1：演示浮点精度限制
 
 ```python
-print("=== Floating Point Precision ===")
+print("=== 浮点精度 ===")
 print(f"0.1 + 0.2 = {0.1 + 0.2}")
 print(f"0.1 + 0.2 == 0.3? {0.1 + 0.2 == 0.3}")
-print(f"Difference: {(0.1 + 0.2) - 0.3:.2e}")
+print(f"差值: {(0.1 + 0.2) - 0.3:.2e}")
 ```
 
-### Step 2: Implement naive vs stable softmax
+### 步骤2：实现朴素版 vs 稳定版 softmax
 
 ```python
 import math
@@ -416,15 +416,15 @@ def softmax_stable(logits):
     return [e / total for e in exps]
 
 safe_logits = [2.0, 1.0, 0.1]
-print(f"Naive:  {softmax_naive(safe_logits)}")
-print(f"Stable: {softmax_stable(safe_logits)}")
+print(f"朴素版:  {softmax_naive(safe_logits)}")
+print(f"稳定版: {softmax_stable(safe_logits)}")
 
 dangerous_logits = [100.0, 101.0, 102.0]
-print(f"Stable: {softmax_stable(dangerous_logits)}")
-# softmax_naive(dangerous_logits) would return [nan, nan, nan]
+print(f"稳定版: {softmax_stable(dangerous_logits)}")
+# softmax_naive(dangerous_logits) 会返回 [nan, nan, nan]
 ```
 
-### Step 3: Implement stable log-sum-exp
+### 步骤3：实现稳定的 log-sum-exp
 
 ```python
 def logsumexp_naive(values):
@@ -435,15 +435,15 @@ def logsumexp_stable(values):
     return c + math.log(sum(math.exp(v - c) for v in values))
 
 safe = [1.0, 2.0, 3.0]
-print(f"Naive:  {logsumexp_naive(safe):.6f}")
-print(f"Stable: {logsumexp_stable(safe):.6f}")
+print(f"朴素版:  {logsumexp_naive(safe):.6f}")
+print(f"稳定版: {logsumexp_stable(safe):.6f}")
 
 large = [500.0, 501.0, 502.0]
-print(f"Stable: {logsumexp_stable(large):.6f}")
-# logsumexp_naive(large) returns inf
+print(f"稳定版: {logsumexp_stable(large):.6f}")
+# logsumexp_naive(large) 返回 inf
 ```
 
-### Step 4: Implement stable cross-entropy
+### 步骤4：实现稳定的交叉熵
 
 ```python
 def cross_entropy_naive(true_class, logits):
@@ -459,11 +459,11 @@ def cross_entropy_stable(true_class, logits):
 
 logits = [2.0, 5.0, 1.0]
 true_class = 1
-print(f"Naive:  {cross_entropy_naive(true_class, logits):.6f}")
-print(f"Stable: {cross_entropy_stable(true_class, logits):.6f}")
+print(f"朴素版:  {cross_entropy_naive(true_class, logits):.6f}")
+print(f"稳定版: {cross_entropy_stable(true_class, logits):.6f}")
 ```
 
-### Step 5: Gradient checking
+### 步骤5：梯度检查
 
 ```python
 def numerical_gradient(f, x, h=1e-5):
@@ -480,9 +480,9 @@ def check_gradient(analytical, numerical, tolerance=1e-5):
     for i, (a, n) in enumerate(zip(analytical, numerical)):
         denom = max(abs(a), abs(n), 1e-8)
         rel_error = abs(a - n) / denom
-        status = "OK" if rel_error < tolerance else "FAIL"
-        print(f"  param {i}: analytical={a:.8f} numerical={n:.8f} "
-              f"rel_error={rel_error:.2e} [{status}]")
+        status = "OK" if rel_error < tolerance else "失败"
+        print(f"  参数 {i}: 解析={a:.8f} 数值={n:.8f} "
+              f"相对误差={rel_error:.2e} [{status}]")
 
 def f(params):
     x, y = params
@@ -498,9 +498,9 @@ numerical = numerical_gradient(f, point)
 check_gradient(analytical, numerical)
 ```
 
-## Use It
+## 使用它
 
-### Mixed precision simulation
+### 混合精度模拟
 
 ```python
 import struct
@@ -519,7 +519,7 @@ def simulate_bfloat16(x):
     return struct.unpack('f', repacked)[0]
 ```
 
-### Gradient clipping
+### 梯度裁剪
 
 ```python
 def clip_by_norm(gradients, max_norm):
@@ -531,19 +531,19 @@ def clip_by_norm(gradients, max_norm):
 
 grads = [10.0, 20.0, 30.0]
 clipped = clip_by_norm(grads, max_norm=5.0)
-print(f"Original norm: {math.sqrt(sum(g**2 for g in grads)):.2f}")
-print(f"Clipped norm:  {math.sqrt(sum(g**2 for g in clipped)):.2f}")
-print(f"Direction preserved: {[c/clipped[0] for c in clipped]} == {[g/grads[0] for g in grads]}")
+print(f"原始范数: {math.sqrt(sum(g**2 for g in grads)):.2f}")
+print(f"裁剪后范数:  {math.sqrt(sum(g**2 for g in clipped)):.2f}")
+print(f"方向保留: {[c/clipped[0] for c in clipped]} == {[g/grads[0] for g in grads]}")
 ```
 
-### NaN/Inf detection
+### NaN/Inf 检测
 
 ```python
 def check_tensor(name, values):
     has_nan = any(math.isnan(v) for v in values)
     has_inf = any(math.isinf(v) for v in values)
     if has_nan or has_inf:
-        print(f"WARNING {name}: nan={has_nan} inf={has_inf}")
+        print(f"警告 {name}: nan={has_nan} inf={has_inf}")
         return False
     return True
 
@@ -552,52 +552,52 @@ check_tensor("bad",  [1.0, float('nan'), 3.0])
 check_tensor("ugly", [1.0, float('inf'), 3.0])
 ```
 
-See `code/numerical.py` for complete implementations with all edge cases demonstrated.
+完整实现及所有边界情况演示请参见 `code/numerical.py`。
 
-## Ship It
+## 交付成果
 
-This lesson produces:
-- `code/numerical.py` with stable softmax, log-sum-exp, cross-entropy, gradient checking, and mixed precision simulation
-- `outputs/prompt-numerical-debugger.md` for diagnosing NaN/Inf and numerical issues in training
+本课程产出：
+- `code/numerical.py`，包含稳定的 softmax、log-sum-exp、交叉熵、梯度检查和混合精度模拟
+- `outputs/prompt-numerical-debugger.md`，用于诊断训练中的 NaN/Inf 和数值问题
 
-These stable implementations reappear in Phase 3 when building the training loop and in Phase 4 when implementing attention mechanisms.
+这些稳定实现将在阶段3构建训练循环时以及阶段4实现注意力机制时再次出现。
 
-## Exercises
+## 练习
 
-1. **Catastrophic cancellation.** Compute the variance of [1000000.0, 1000001.0, 1000002.0] using the naive formula `E[x^2] - E[x]^2` in float32. Then compute it using Welford's online algorithm. Compare the errors against the true variance (0.6667).
+1.  **灾难性抵消。** 在 float32 中使用朴素公式 `E[x^2] - E[x]^2` 计算 [1000000.0, 1000001.0, 1000002.0] 的方差。然后使用 Welford 在线算法计算。将误差与真实方差 (0.6667) 进行比较。
 
-2. **Precision hunt.** Find the smallest positive float32 value `x` such that `1.0 + x == 1.0` in Python. This is the machine epsilon. Verify it matches `numpy.finfo(numpy.float32).eps`.
+2.  **精度探索。** 在 Python 中找到最小的正 float32 数值 `x`，使得 `1.0 + x == 1.0`。这就是机器精度 epsilon。验证它与 `numpy.finfo(numpy.float32).eps` 匹配。
 
-3. **Log-sum-exp edge cases.** Test your `logsumexp_stable` function with: (a) all values equal, (b) one value much larger than the rest, (c) all values very negative (-1000). Verify it gives correct results where the naive version fails.
+3.  **Log-sum-exp 边界情况。** 使用以下情况测试你的 `logsumexp_stable` 函数：(a) 所有值相等，(b) 一个值远大于其他值，(c) 所有值都非常负 (-1000)。验证在朴素版本失败的地方，它能给出正确结果。
 
-4. **Gradient checking a neural network layer.** Implement a single linear layer `y = Wx + b` and its analytical backward pass. Use `numerical_gradient` to verify correctness for a 3x2 weight matrix.
+4.  **神经网络层的梯度检查。** 实现一个简单的线性层 `y = Wx + b` 及其解析反向传播。使用 `numerical_gradient` 验证一个 3x2 权重矩阵的正确性。
 
-5. **Loss scaling experiment.** Simulate training with float16: create random gradients in the range [1e-9, 1e-3], convert to float16, and measure what fraction become zero. Then apply loss scaling (multiply by 1024), convert to float16, scale back, and measure the zero fraction again.
+5.  **损失缩放实验。** 模拟 float16 训练：生成范围在 [1e-9, 1e-3] 的随机梯度，转换为 float16，并测量其中有多少变为零。然后应用损失缩放（乘以 1024），转换为 float16，缩放回来，再次测量变为零的比例。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
+| 术语 | 人们常说的 | 实际含义 |
 |------|----------------|----------------------|
-| IEEE 754 | "The float standard" | International standard defining binary floating point formats, rounding rules, and special values (inf, nan). Every modern CPU and GPU implements it. |
-| Machine epsilon | "The precision limit" | The smallest value e such that 1.0 + e != 1.0 in a given float format. For float32, it is about 1.19e-7. |
-| Catastrophic cancellation | "Precision loss from subtraction" | When subtracting nearly equal floating point numbers, significant digits cancel and rounding noise dominates the result. |
-| Overflow | "Number too big" | A result exceeds the maximum representable value and becomes inf. exp(89) overflows float32. |
-| Underflow | "Number too small" | A result is closer to zero than the smallest representable positive number and becomes 0.0. exp(-104) underflows float32. |
-| Log-sum-exp trick | "Subtract the max first" | Computing log(sum(exp(x))) by factoring out exp(max(x)) to prevent overflow and underflow. Used in softmax, cross-entropy, and log-probability math. |
-| Stable softmax | "Softmax that does not explode" | Subtracting max(logits) before exponentiating. Numerically identical result, no overflow possible. |
-| Gradient checking | "Verify your backprop" | Comparing analytical gradients from backpropagation against numerical gradients from finite differences to catch implementation bugs. |
-| Mixed precision | "Float16 forward, float32 backward" | Using lower-precision floats for speed-critical operations and higher-precision floats for numerically sensitive operations. Typical speedup is 2-3x. |
-| Loss scaling | "Prevent gradient underflow" | Multiplying the loss by a large constant before backprop so gradients stay in float16's representable range, then dividing by the same constant before weight updates. |
-| bfloat16 | "Brain floating point" | Google's 16-bit format with 8 exponent bits (same range as float32) and 7 mantissa bits (less precision than float16). Preferred for training. |
-| Gradient clipping | "Cap the gradient norm" | Scaling the gradient vector so its norm does not exceed a threshold. Prevents exploding gradients from ruining weights. |
-| NaN | "Not a Number" | Special float value from undefined operations (0/0, inf-inf, sqrt(-1)). Propagates through all subsequent arithmetic. |
-| Inf | "Infinity" | Special float value from overflow or division by zero. Can combine to produce NaN (inf - inf, inf * 0). |
-| Numerical gradient | "Brute force derivative" | Approximating a derivative by evaluating f(x+h) and f(x-h) and dividing by 2h. Slow but reliable for verification. |
+| IEEE 754 | "浮点数标准" | 定义二进制浮点格式、舍入规则和特殊值（inf, nan）的国际标准。每个现代 CPU 和 GPU 都实现它。 |
+| 机器精度 epsilon | "精度极限" | 在给定的浮点格式下，使得 1.0 + e != 1.0 的最小值 e。对于 float32，约为 1.19e-7。 |
+| 灾难性抵消 | "减法导致精度丢失" | 当相减两个几乎相等的浮点数时，有效数字抵消，舍入噪声主导了结果。 |
+| 溢出 | "数值太大" | 结果超过最大可表示值，变成 inf。exp(89) 会使 float32 溢出。 |
+| 下溢 | "数值太小" | 结果比最小可表示正数更接近零，变成 0.0。exp(-104) 会使 float32 下溢。 |
+| Log-sum-exp 技巧 | "先减去最大值" | 通过提取公因子 exp(max(x)) 来计算 log(sum(exp(x)))，以防止溢出和下溢。用于 softmax、交叉熵和对数概率计算。 |
+| 稳定 softmax | "不会爆炸的 softmax" | 在取指数之前减去 max(logits)。数值结果相同，但不可能溢出。 |
+| 梯度检查 | "验证你的反向传播" | 将来自反向传播的解析梯度与来自有限差分的数值梯度进行比较，以捕获实现错误。 |
+| 混合精度 | "Float16 前向，Float32 反向" | 对速度关键的操作使用低精度浮点数，对数值敏感的操作使用高精度浮点数。典型加速为 2-3 倍。 |
+| 损失缩放 | "防止梯度下溢" | 在反向传播之前将损失乘以一个大常数，使梯度保持在 float16 的可表示范围内，然后在权重更新之前除以同一个常数。 |
+| bfloat16 | "Brain 浮点格式" | 谷歌的 16 位格式，具有 8 位指数（与 float32 范围相同）和 7 位尾数（精度低于 float16）。更适合训练。 |
+| 梯度裁剪 | "限制梯度范数" | 缩放梯度向量，使其范数不超过阈值。防止梯度爆炸破坏权重。 |
+| NaN | "非数字" | 来自未定义运算（0/0, inf-inf, sqrt(-1)）的特殊浮点值。会传播到所有后续算术运算中。 |
+| Inf | "无穷大" | 来自溢出或除以零的特殊浮点值。可能组合产生 NaN（inf - inf, inf * 0）。 |
+| 数值梯度 | "暴力求导" | 通过计算 f(x+h) 和 f(x-h) 并除以 2h 来近似导数。速度慢但可靠，用于验证。 |
 
-## Further Reading
+## 延伸阅读
 
-- [What Every Computer Scientist Should Know About Floating-Point Arithmetic (Goldberg 1991)](https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html) -- the definitive reference, dense but complete
-- [Mixed Precision Training (Micikevicius et al., 2018)](https://arxiv.org/abs/1710.03740) -- the NVIDIA paper that introduced loss scaling for float16 training
-- [AMP: Automatic Mixed Precision (PyTorch docs)](https://pytorch.org/docs/stable/amp.html) -- practical guide to mixed precision in PyTorch
-- [bfloat16 format (Google Cloud TPU docs)](https://cloud.google.com/tpu/docs/bfloat16) -- why Google chose this format for TPUs
-- [Kahan Summation (Wikipedia)](https://en.wikipedia.org/wiki/Kahan_summation_algorithm) -- algorithm for reducing rounding error in floating point sums
+- [What Every Computer Scientist Should Know About Floating-Point Arithmetic (Goldberg 1991)](https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html) —— 权威参考，内容密集但全面
+- [Mixed Precision Training (Micikevicius et al., 2018)](https://arxiv.org/abs/1710.03740) —— NVIDIA 引入用于 float16 训练的损失缩放的论文
+- [AMP: Automatic Mixed Precision (PyTorch docs)](https://pytorch.org/docs/stable/amp.html) —— PyTorch 中混合精度的实用指南
+- [bfloat16 format (Google Cloud TPU docs)](https://cloud.google.com/tpu/docs/bfloat16) —— 为什么谷歌为 TPU 选择这种格式
+- [Kahan Summation (Wikipedia)](https://en.wikipedia.org/wiki/Kahan_summation_algorithm) —— 减少浮点求和舍入误差的算法
