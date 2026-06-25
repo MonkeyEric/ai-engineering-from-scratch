@@ -1,36 +1,36 @@
-# Information Retrieval and Search
+# 信息检索与搜索
 
-> BM25 is precise but brittle. Dense casts a wide net but misses keywords. Hybrid is the 2026 default. Everything else is tuning.
+> BM25 精确但脆弱。密集检索覆盖面广但会漏掉关键词。混合检索是 2026 年的默认方案。其余都是调优。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 5 · 02 (BoW + TF-IDF), Phase 5 · 04 (GloVe, FastText, Subword)
-**Time:** ~75 minutes
+**类型：** 构建
+**语言：** Python
+**先修知识：** 阶段 5 · 02（词袋 + TF-IDF），阶段 5 · 04（GloVe、FastText、子词）
+**时长：** 约 75 分钟
 
-## The Problem
+## 问题背景
 
-The user types "what happens if someone lies to get money" and expects to find the statute that actually covers that: "Section 420 IPC." A keyword search misses it entirely (no shared vocabulary). A semantic search misses it if the embeddings were not trained on legal text. Real search has to handle both.
+用户输入 "what happens if someone lies to get money"，并期望找到实际相关的法条："Section 420 IPC"。关键词搜索完全失效（没有共享词汇）。语义搜索也失效，如果嵌入不是用法律文本训练的。真正的搜索必须同时兼顾两者。
 
-IR is the pipeline under every RAG system, every search bar, every docs site's fuzzy lookup. The 2026 architecture that works in production is not a single method. It is a chain of complementary methods, each catching the failures of the one before.
+信息检索（IR）是每个 RAG 系统、每个搜索框、每个文档站点模糊查找背后的管道。2026 年能在生产环境落地的架构不是单一方法，而是一系列互补方法的组合，每一种都能弥补前一种的失败。
 
-This lesson builds each piece and names which failures each catches.
+本课逐步构建每个模块，并指出每种方法能捕捉哪些失败场景。
 
-## The Concept
+## 核心概念
 
-![Hybrid retrieval: BM25 + dense + RRF + cross-encoder rerank](../assets/retrieval.svg)
+![混合检索：BM25 + 密集检索 + RRF + 交叉编码器重排序](../assets/retrieval.svg)
 
-Four layers. Pick the ones you need.
+四层结构。按需选择。
 
-1. **Sparse retrieval (BM25).** Fast, precise on exact matches, terrible on semantics. Run over an inverted index. Sub-10ms per query on millions of documents. Gets you statute references, product codes, error messages, named entities right.
-2. **Dense retrieval.** Encode query and documents into vectors. Nearest neighbor search. Captures paraphrases and semantic similarity. Misses exact keyword matches that differ by one character. 50-200ms per query with FAISS or a vector DB.
-3. **Fusion.** Merge the ranked lists from sparse and dense. Reciprocal Rank Fusion (RRF) is the easy default because it ignores raw scores (which live in different scales) and only uses rank positions. Weighted fusion is an option when you know one signal dominates for your domain.
-4. **Cross-encoder rerank.** Take the top-30 from fusion. Run a cross-encoder (query + document together, scoring each pair). Keep the top-5. Cross-encoders are slower per pair than bi-encoders but far more accurate. You amortize by only running them on the top-30.
+1. **稀疏检索（BM25）。** 速度快，精确匹配表现好，语义理解差。基于倒排索引运行。在数百万文档上每次查询低于 10 毫秒。能准确找到法条引用、产品代码、错误信息、命名实体。
+2. **密集检索。** 将查询和文档编码成向量。通过最近邻搜索查找。能捕捉改写和语义相似性。对只差一个字符的精确关键词匹配会失效。使用 FAISS 或向量数据库时每次查询 50-200 毫秒。
+3. **融合。** 合并稀疏和密集检索的排序结果。倒数排序融合（RRF）是简单的默认选择，因为它忽略原始分数（不同方法的分数尺度不同），只使用排名位置。当某个信号在你的领域占主导时，也可以选择加权融合。
+4. **交叉编码器重排序。** 取融合后的前 30 个结果。运行交叉编码器（将查询和文档一起输入，为每对打分）。保留前 5 个。交叉编码器每对推理比双编码器慢，但准确率高得多。只对前 30 个运行，可以摊平成本。
 
-Three-way retrieval (BM25 + dense + learned-sparse like SPLADE) outperforms two-way in 2026 benchmarks but needs infrastructure for learned-sparse indexes. For most teams, two-way plus cross-encoder rerank is the sweet spot.
+三路检索（BM25 + 密集 + 学习式稀疏如 SPLADE）在 2026 年的基准测试中优于两路，但需要为学习式稀疏索引提供基础设施。对大多数团队来说，两路加交叉编码器重排序是最佳平衡点。
 
-## Build It
+## 动手构建
 
-### Step 1: BM25 from scratch
+### 步骤 1：从零实现 BM25
 
 ```python
 import math
@@ -83,9 +83,9 @@ class BM25:
         return scored[:top_k]
 ```
 
-Two parameters worth knowing. `k1=1.5` controls term-frequency saturation; higher means more weight on term repetition. `b=0.75` controls length normalization; 0 ignores document length, 1 fully normalizes. The defaults are Robertson's recommendations from the original paper and rarely need tuning.
+两个值得了解的参数。`k1=1.5` 控制词频饱和度；值越大，重复词项权重越高。`b=0.75` 控制长度归一化；0 表示忽略文档长度，1 表示完全归一化。默认值来自原始论文中 Robertson 的推荐，通常无需调整。
 
-### Step 2: dense retrieval with a bi-encoder
+### 步骤 2：用双编码器实现密集检索
 
 ```python
 from sentence_transformers import SentenceTransformer
@@ -105,9 +105,9 @@ def dense_search(encoder, embeddings, query, top_k=10):
     return [(float(sims[i]), int(i)) for i in order]
 ```
 
-L2-normalize embeddings so dot product equals cosine. `all-MiniLM-L6-v2` is 384-dim, fast, and strong enough for most English retrieval. For multilingual work, use `paraphrase-multilingual-MiniLM-L12-v2`. For top accuracy, `bge-large-en-v1.5` or `e5-large-v2`.
+对嵌入做 L2 归一化，使点积等于余弦相似度。`all-MiniLM-L6-v2` 是 384 维，速度快，对大多数英文检索已经足够强。多语言场景使用 `paraphrase-multilingual-MiniLM-L12-v2`。追求最高准确率时，使用 `bge-large-en-v1.5` 或 `e5-large-v2`。
 
-### Step 3: Reciprocal Rank Fusion
+### 步骤 3：倒数排序融合
 
 ```python
 def reciprocal_rank_fusion(rankings, k=60):
@@ -119,9 +119,9 @@ def reciprocal_rank_fusion(rankings, k=60):
     return [(score, doc_idx) for doc_idx, score in fused]
 ```
 
-The `k=60` constant comes from the original RRF paper. Higher `k` flattens the contribution of rank differences; lower `k` makes top ranks dominate. 60 is the published default and rarely needs tuning.
+`k=60` 这个常数来自原始 RRF 论文。`k` 越大，排名差异带来的贡献越平缓；`k` 越小，靠前的排名越占主导。60 是文献中的默认推荐，通常无需调整。
 
-### Step 4: hybrid search + rerank
+### 步骤 4：混合搜索 + 重排序
 
 ```python
 from sentence_transformers import CrossEncoder
@@ -140,91 +140,91 @@ def hybrid_search(query, bm25, encoder, dense_embeddings, corpus, top_k=5, pool_
     return reranked[:top_k]
 ```
 
-Three stages composed. BM25 finds lexical matches. Dense finds semantic matches. RRF merges the two rankings without needing score calibration. Cross-encoder rescores the top-30 using query-document pairs together, which captures fine-grained relevance the bi-encoder missed. Keep top-5.
+三个阶段的组合。BM25 找到词汇匹配。密集检索找到语义匹配。RRF 无需分数校准即可合并两个排序。交叉编码器对前 30 个结果使用查询-文档对重新打分，能捕捉双编码器遗漏的细粒度相关性。保留前 5 个。
 
-### Step 5: evaluation
+### 步骤 5：评估
 
-| Metric | Meaning |
-|--------|---------|
-| Recall@k | Of queries where the correct document exists, how often is it in the top-k? |
-| MRR (Mean Reciprocal Rank) | Average of 1/rank of first relevant document. |
-| nDCG@k | Accounts for relevance gradations, not just binary relevant/not. |
+| 指标 | 含义 |
+|------|------|
+| Recall@k | 在存在正确文档的查询中，正确文档出现在前 k 个的比例是多少？ |
+| MRR（平均倒数排名） | 第一个相关文档排名的倒数平均值。 |
+| nDCG@k | 考虑相关性等级，而不仅仅是二元的相关/不相关。 |
 
-For RAG specifically, **Recall@k** of the retriever is the most important number. Your reader cannot answer if the right passage is not in the retrieved set.
+对于 RAG 来说，检索器的 **Recall@k** 是最重要的数字。如果正确的段落不在检索结果中，阅读器就无法回答。
 
-Debugging tip: for failing queries, diff the sparse and dense rankings. If one finds the right document and the other does not, you have a vocabulary mismatch (fix: add the missing half) or a semantic ambiguity (fix: better embeddings or a reranker).
+调试提示：对于失败的查询，对比稀疏和密集排序结果。如果其中一个找到了正确文档而另一个没有，说明是词汇不匹配（修复：补上缺失的一半）或语义歧义（修复：更好的嵌入或重排序器）。
 
-## Use It
+## 应用
 
-The 2026 stack:
+2026 年的技术栈：
 
-| Scale | Stack |
-|-------|-------|
-| 1k-100k docs | In-memory BM25 + `all-MiniLM-L6-v2` embeddings + RRF. No separate DB. |
-| 100k-10M docs | FAISS or pgvector for dense + Elasticsearch / OpenSearch for BM25. Run in parallel. |
-| 10M+ docs | Qdrant / Weaviate / Vespa / Milvus with hybrid support. Cross-encoder rerank on top-30. |
-| Best-quality frontier | Three-way (BM25 + dense + SPLADE) + ColBERT late-interaction reranking |
+| 规模 | 技术栈 |
+|------|--------|
+| 1k-100k 文档 | 内存中的 BM25 + `all-MiniLM-L6-v2` 嵌入 + RRF。不需要独立数据库。 |
+| 100k-1000 万文档 | FAISS 或 pgvector 做密集检索 + Elasticsearch / OpenSearch 做 BM25。并行运行。 |
+| 1000 万+ 文档 | Qdrant / Weaviate / Vespa / Milvus 等支持混合检索的系统。对前 30 个结果做交叉编码器重排序。 |
+| 最佳质量前沿 | 三路（BM25 + 密集 + SPLADE）+ ColBERT 后期交互重排序 |
 
-Whatever you pick, budget for evaluation. Benchmark retrieval recall before benchmarking end-to-end RAG accuracy. A reader cannot fix what the retriever missed.
+无论你选择哪种方案，都要为评估预留预算。在基准测试端到端 RAG 准确率之前，先基准测试检索召回率。阅读器无法修复检索器漏掉的内容。
 
-### The hard-won lessons from 2026 production RAG
+### 2026 年生产 RAG 来之不易的经验
 
-- **80% of RAG failures trace to ingestion and chunking, not the model.** Teams spend weeks swapping LLMs and tuning prompts while the retrieval quietly returns the wrong context every third query. Fix chunking first.
-- **Chunking strategy matters more than chunk size.** Fixed-size splits break tables, code, and nested headers. Sentence-aware is the default; semantic or LLM-based chunking pays off for technical docs and product manuals.
-- **Parent-doc pattern.** Retrieve small "child" chunks for precision. When multiple children from the same parent section appear, swap in the parent block to preserve context. This consistently lifts answer quality without retraining.
-- **k_rerank=3 is usually optimal.** Every extra chunk past that adds token cost and generation latency without lifting answer quality. If k=8 is still better than k=3 for you, the reranker is underperforming.
-- **HyDE / query expansion.** Generate a hypothetical answer from the query, embed that, retrieve. Bridges the phrasing gap between short questions and long documents. Free precision lift with no training.
-- **Context budget under 8K tokens.** Consistent hits at that limit mean the reranker threshold is too loose.
-- **Version everything.** Prompts, chunking rules, embedding model, reranker. Any drift silently breaks answer quality. CI gates on faithfulness, context precision, and unanswered-question rate block regressions before users see them.
-- **Three-way retrieval (BM25 + dense + learned-sparse like SPLADE) outperforms two-way** on 2026 benchmarks, especially for queries mixing proper nouns with semantics. Ship it when infrastructure supports SPLADE indexes.
+- **80% 的 RAG 失败可以追溯到数据摄取和分块，而不是模型。** 团队花数周时间更换大模型和调整提示词，而检索每三个查询就悄悄返回错误的上下文。先修复分块问题。
+- **分块策略比分块大小更重要。** 固定大小的切分会破坏表格、代码和嵌套标题。句子感知是默认方案；语义分块或基于大模型的分块对技术文档和产品手册更有价值。
+- **父文档模式。** 检索小的"子"块以获得精度。当同一父章节的多个子块出现时，替换为完整的父块以保留上下文。这能在不重新训练的情况下持续提升回答质量。
+- **k_rerank=3 通常最优。** 超过这个数量的每个额外块都会增加 token 成本和生成延迟，却不会提升回答质量。如果 k=8 对你来说仍然比 k=3 好，说明重排序器表现不佳。
+- **HyDE / 查询扩展。** 从查询生成一个假设答案，对该答案做嵌入，然后进行检索。弥合短问题与长文档之间的措辞鸿沟。无需训练即可免费提升精度。
+- **上下文预算控制在 8K token 以内。** 持续达到这个上限意味着重排序阈值过松。
+- **所有东西都要版本化。** 提示词、分块规则、嵌入模型、重排序器。任何漂移都会悄悄破坏回答质量。在忠实度、上下文精度和未回答问题率上设置 CI 门禁，防止用户受到影响。
+- **三路检索（BM25 + 密集 + 学习式稀疏如 SPLADE）优于两路**，在 2026 年的基准测试中尤其擅长处理混合了专有名词和语义的查询。当基础设施支持 SPLADE 索引时，应投入使用。
 
-Proper retrieval design reduces hallucinations by 70-90% according to 2026 industry measurements. Most RAG performance gains come from better retrieval, not model fine-tuning.
+根据 2026 年的行业测算，合理的检索设计可将幻觉降低 70-90%。大多数 RAG 性能提升来自更好的检索，而不是模型微调。
 
-## Ship It
+## 交付
 
-Save as `outputs/skill-retrieval-picker.md`:
+保存为 `outputs/skill-retrieval-picker.md`：
 
 ```markdown
 ---
 name: retrieval-picker
-description: Pick a retrieval stack for a given corpus and query pattern.
+description: 根据给定的语料库和查询模式选择检索技术栈。
 version: 1.0.0
 phase: 5
 lesson: 14
 tags: [nlp, retrieval, rag, search]
 ---
 
-Given requirements (corpus size, query pattern, latency budget, quality bar, infra constraints), output:
+给定需求（语料库规模、查询模式、延迟预算、质量要求、基础设施限制），输出：
 
-1. Stack. BM25 only, dense only, hybrid (BM25 + dense + RRF), hybrid + cross-encoder rerank, or three-way (BM25 + dense + learned-sparse).
-2. Dense encoder. Name the specific model. Match to language(s), domain, and context length.
-3. Reranker. Name the specific cross-encoder model if used. Flag that rerank adds 30-100ms latency on top-30.
-4. Evaluation plan. Recall@10 is the primary retriever metric. MRR for multi-answer. Baseline first, incremental improvements measured against it.
+1. 技术栈。仅 BM25、仅密集检索、混合（BM25 + 密集 + RRF）、混合 + 交叉编码器重排序，或三路（BM25 + 密集 + 学习式稀疏）。
+2. 密集编码器。指定具体模型。根据语言、领域和上下文长度进行匹配。
+3. 重排序器。如果使用，指定具体的交叉编码器模型。注意重排序会在前 30 个结果上增加 30-100ms 延迟。
+4. 评估计划。Recall@10 是检索器的主要指标。多答案场景使用 MRR。先建立基线，再针对基线衡量增量改进。
 
-Refuse to recommend dense-only for corpora with named entities, error codes, or product SKUs unless the user has evidence dense handles exact matches. Refuse to skip reranking for high-stakes retrieval (legal, medical) where the final top-5 decides the user's answer.
+对于包含命名实体、错误代码或产品 SKU 的语料库，除非用户有证据表明密集检索能处理精确匹配，否则拒绝推荐纯密集检索。对于高风险检索（法律、医疗），如果最终前 5 个结果决定用户答案，则拒绝跳过重排序。
 ```
 
-## Exercises
+## 练习
 
-1. **Easy.** Implement `hybrid_search` above on a 500-document corpus. Test 20 queries. Compare recall at 5 between BM25-only, dense-only, and hybrid.
-2. **Medium.** Add MRR calculation. For each test query with a known correct document, find the rank of the correct doc in BM25, dense, and hybrid rankings. Report the MRR for each.
-3. **Hard.** Fine-tune a dense encoder on your domain using MultipleNegativesRankingLoss (Sentence Transformers). Build a training set from 500 query-document pairs. Compare pre- and post-fine-tune recall.
+1. **简单。** 在上述 500 篇文档的语料库上实现 `hybrid_search`。测试 20 个查询。比较 BM25 单独、密集单独和混合三者的 Recall@5。
+2. **中等。** 添加 MRR 计算。对于每个已知有正确文档的测试查询，找出正确文档在 BM25、密集和混合排序中的排名。报告每种方法的 MRR。
+3. **困难。** 使用 MultipleNegativesRankingLoss（Sentence Transformers）在领域数据上微调密集编码器。从 500 个查询-文档对构建训练集。比较微调前后的召回率。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|-----------------|-----------------------|
-| BM25 | Keyword search | Okapi BM25. Scores documents by term frequency, IDF, and length. |
-| Dense retrieval | Vector search | Encode query + doc into vectors, find nearest neighbors. |
-| Bi-encoder | Embedding model | Encodes query and doc independently. Fast at query time. |
-| Cross-encoder | Reranker model | Encodes query + doc together. Slow but accurate. |
-| RRF | Rank fusion | Combine two rankings by summing `1/(k + rank)`. |
-| Recall@k | Retrieval metric | Fraction of queries where a relevant doc is in the top-k. |
+| 术语 | 人们的说法 | 实际含义 |
+|------|-----------|----------|
+| BM25 | 关键词搜索 | Okapi BM25。根据词频、IDF 和文档长度对文档打分。 |
+| 密集检索 | 向量搜索 | 将查询和文档编码成向量，找到最近邻。 |
+| 双编码器 | 嵌入模型 | 独立编码查询和文档。查询时速度快。 |
+| 交叉编码器 | 重排序模型 | 将查询和文档一起编码。慢但准确。 |
+| RRF | 排序融合 | 通过求和 `1/(k + rank)` 合并两个排序。 |
+| Recall@k | 检索指标 | 相关文档出现在前 k 个的查询比例。 |
 
-## Further Reading
+## 延伸阅读
 
-- [Robertson and Zaragoza (2009). The Probabilistic Relevance Framework: BM25 and Beyond](https://www.staff.city.ac.uk/~sbrp622/papers/foundations_bm25_review.pdf) — the definitive BM25 treatment.
-- [Karpukhin et al. (2020). Dense Passage Retrieval for Open-Domain QA](https://arxiv.org/abs/2004.04906) — DPR, the canonical bi-encoder.
-- [Formal et al. (2021). SPLADE: Sparse Lexical and Expansion Model](https://arxiv.org/abs/2107.05720) — the learned-sparse retriever that closes the gap with dense.
-- [Cormack, Clarke, Büttcher (2009). Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — RRF paper.
-- [Khattab and Zaharia (2020). ColBERT: Efficient and Effective Passage Search](https://arxiv.org/abs/2004.12832) — late-interaction retrieval.
+- [Robertson and Zaragoza (2009). The Probabilistic Relevance Framework: BM25 and Beyond](https://www.staff.city.ac.uk/~sbrp622/papers/foundations_bm25_review.pdf) — BM25 的权威综述。
+- [Karpukhin et al. (2020). Dense Passage Retrieval for Open-Domain QA](https://arxiv.org/abs/2004.04906) — DPR，经典的双编码器。
+- [Formal et al. (2021). SPLADE: Sparse Lexical and Expansion Model](https://arxiv.org/abs/2107.05720) — 缩小与密集检索差距的学习式稀疏检索器。
+- [Cormack, Clarke, Büttcher (2009). Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — RRF 论文。
+- [Khattab and Zaharia (2020). ColBERT: Efficient and Effective Passage Search](https://arxiv.org/abs/2004.12832) — 后期交互检索。

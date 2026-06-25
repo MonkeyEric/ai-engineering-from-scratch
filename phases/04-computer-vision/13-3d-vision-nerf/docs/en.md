@@ -1,32 +1,32 @@
-# 3D Vision — Point Clouds & NeRFs
+# 3D 视觉——点云与 NeRF
 
-> 3D vision comes in two flavours. Point clouds are the sensor's raw output. NeRFs are the learned volumetric field. Both answer "what is where in space."
+> 3D 视觉有两种形态。点云是传感器的原始输出。NeRF 是学习得到的体积场。两者都在回答“空间中有什么、在哪里”。
 
-**Type:** Learn + Build
-**Languages:** Python
-**Prerequisites:** Phase 4 Lesson 03 (CNNs), Phase 1 Lesson 12 (Tensor Operations)
-**Time:** ~45 minutes
+**类型：** 学习 + 实践  
+**语言：** Python  
+**前置知识：** 阶段 4 第 03 课（CNN）、阶段 1 第 12 课（张量操作）  
+**时间：** ~45 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Distinguish explicit (point cloud, mesh, voxel) and implicit (signed distance field, NeRF) 3D representations and when each is used
-- Understand PointNet's symmetric-function trick that makes a neural network permutation-invariant over an unordered set of points
-- Trace a NeRF forward pass: ray casting, volumetric rendering, positional encoding, MLP density+colour head
-- Use `nerfstudio` or `instant-ngp` for pretrained 3D reconstruction from a small set of posed images
+- 区分显式（点云、网格、体素）与隐式（有符号距离场、NeRF）三维表示及其适用场景
+- 理解 PointNet 的对称函数技巧，它使神经网络对无序点集具有置换不变性
+- 追踪 NeRF 的前向传播：光线投射、体渲染、位置编码、MLP 密度头 + 颜色头
+- 使用 `nerfstudio` 或 `instant-ngp`，从少量带有位姿的图像进行预训练三维重建
 
-## The Problem
+## 问题背景
 
-A camera produces a 2D image. A LIDAR produces a set of 3D points with no ordering. A structure-from-motion pipeline produces a sparse cloud of 3D keypoints. A NeRF reconstructs an entire 3D scene from a handful of posed images. All of these are "vision" but none of them look like the dense tensor a CNN wants.
+相机生成二维图像。激光雷达生成一组没有顺序的三维点。运动恢复结构（SfM）流程生成稀疏的三维关键点云。NeRF 从少量带有位姿的图像重建完整的三维场景。这些都属于“视觉”，但都不是 CNN 所期望的稠密张量。
 
-3D vision matters because almost every high-value robot task runs in 3D: grasping, obstacle avoidance, navigation, AR occlusion, 3D content capture. A vision engineer who only understands 2D images is locked out of the fastest-growing slice of the field (AR/VR content, robotics, autonomous driving stacks, NeRF-based 3D reconstruction for real-estate or construction).
+3D 视觉之所以重要，是因为几乎所有高价值的机器人任务都在三维空间中运行：抓取、避障、导航、AR 遮挡、三维内容采集。只懂二维图像的视觉工程师将被该领域增长最快的部分（AR/VR 内容、机器人、自动驾驶堆栈、房地产或建筑领域的 NeRF 三维重建）拒之门外。
 
-The two representations dominate for different reasons. Point clouds are what sensors give you for free. NeRFs and their successors (3D Gaussian splatting, neural SDFs) are what you get when you ask a neural network to learn a scene.
+这两种表示因不同原因而占据主导。点云是传感器免费给你的数据。NeRF 及其后继方法（3D 高斯泼溅、神经 SDF）则是让神经网络学习场景时得到的结果。
 
-## The Concept
+## 核心概念
 
-### Point clouds
+### 点云
 
-A point cloud is an unordered set of N points in R^3, optionally each with features (colour, intensity, normal).
+点云是 R^3 中 N 个点的无序集合，每个点可选地带有特征（颜色、强度、法线）。
 
 ```
 cloud = [
@@ -37,20 +37,20 @@ cloud = [
 ]
 ```
 
-No grid, no connectivity. Two properties make this hard for neural networks:
+没有网格，没有连接关系。两个性质让神经网络难以处理：
 
-- **Permutation invariance** — the output must not depend on point order.
-- **Variable N** — a single model must handle clouds of different sizes.
+- **置换不变性** —— 输出不能依赖点的顺序。
+- **可变的 N** —— 同一个模型必须能处理不同大小的点云。
 
-PointNet (Qi et al., 2017) solved both with one idea: apply a shared MLP to every point, then aggregate with a symmetric function (max pool). The result is a fixed-size vector that does not depend on order.
+PointNet（Qi 等人，2017）用一个思想同时解决了这两个问题：对每个点应用共享的 MLP，然后用对称函数（最大池化）聚合。结果是一个不依赖顺序的定长向量。
 
 ```
 f(P) = max_{p in P} MLP(p)
 ```
 
-This is the entire core of PointNet. Deeper variants (PointNet++, Point Transformer) add hierarchical sampling and local aggregation but the symmetric-function trick is unchanged.
+这就是 PointNet 的全部核心。更深的变体（PointNet++、Point Transformer）增加了层次采样和局部聚合，但对称函数技巧始终未变。
 
-### The PointNet architecture
+### PointNet 架构
 
 ```mermaid
 flowchart LR
@@ -66,11 +66,11 @@ flowchart LR
     style CLS fill:#dcfce7,stroke:#16a34a
 ```
 
-"Shared MLP" means the same MLP runs on every point independently. Implemented as a 1x1 conv over the point dimension for efficiency.
+“共享 MLP”意味着同一个 MLP 独立作用于每个点。实际实现时，为效率起见会沿点维度做 1x1 卷积。
 
-### Neural Radiance Fields (NeRFs)
+### 神经辐射场（NeRF）
 
-NeRFs (Mildenhall et al., 2020) took the question "can we reconstruct a 3D scene from N photos?" and answered with a neural network that is the scene. The network maps `(x, y, z, viewing_direction)` to `(density, colour)`. Rendering a new view is a ray-casting loop over this network.
+NeRF（Mildenhall 等人，2020）回答了“能否从 N 张照片重建三维场景？”这个问题，方法是让神经网络本身成为场景。该网络将 `(x, y, z, viewing_direction)` 映射为 `(density, colour)`。渲染新视角就是对网络进行光线投射循环。
 
 ```
 NeRF MLP:  (x, y, z, theta, phi) -> (sigma, r, g, b)
@@ -83,19 +83,19 @@ To render a pixel (u, v) of a new view:
   5. The sum is the rendered pixel colour
 ```
 
-A loss compares the rendered pixel to the ground-truth pixel in the training photos. Backprop through the rendering step updates the MLP. No 3D ground truth, no explicit geometry — the scene is stored in the MLP weights.
+损失将渲染像素与训练照片中的真实像素进行比较。通过渲染步骤反向传播来更新 MLP。没有三维真值，没有显式几何——场景存储在 MLP 的权重中。
 
-### Positional encoding in NeRF
+### NeRF 中的位置编码
 
-A vanilla MLP on `(x, y, z)` cannot represent high-frequency details because MLPs are spectrally biased toward low frequencies. NeRF fixes this by encoding each coordinate into a Fourier feature vector before the MLP:
+普通 MLP 直接作用于 `(x, y, z)` 无法表示高频细节，因为 MLP 在频谱上偏向低频。NeRF 的解决方法是：在输入 MLP 前将每个坐标编码为傅里叶特征向量：
 
 ```
 gamma(p) = (sin(2^0 pi p), cos(2^0 pi p), sin(2^1 pi p), cos(2^1 pi p), ...)
 ```
 
-Up to L=10 frequency levels. This is the same trick transformers use for positions, and it appears again in diffusion time conditioning (Lesson 10). Without it, NeRFs look blurry.
+最高到 L=10 个频率层级。这与 Transformer 处理位置信息所用的技巧相同，也出现在扩散模型的时间条件中（第 10 课）。没有它，NeRF 渲染结果会模糊。
 
-### Volumetric rendering
+### 体渲染
 
 ```
 C(r) = sum_i T_i * (1 - exp(-sigma_i * delta_i)) * c_i
@@ -104,29 +104,29 @@ T_i  = exp(- sum_{j<i} sigma_j * delta_j)
 delta_i = t_{i+1} - t_i
 ```
 
-`T_i` is transmittance — how much light survives to point i. `(1 - exp(-sigma_i * delta_i))` is the opacity at point i. `c_i` is the colour. The final pixel is a weighted sum along the ray.
+`T_i` 是透射率 —— 有多少光能够到达第 i 个点。`(1 - exp(-sigma_i * delta_i))` 是第 i 个点的不透明度。`c_i` 是颜色。最终像素是沿光线的加权和。
 
-### What replaced NeRFs
+### 什么取代了 NeRF
 
-Pure NeRFs are slow to train (hours) and slow to render (seconds per image). The lineage since:
+纯 NeRF 训练慢（数小时）且渲染慢（每张图像数秒）。此后的演进：
 
-- **Instant-NGP** (2022) — hash-grid encoding replaces the MLP's position input; trains in seconds.
-- **Mip-NeRF 360** — handles unbounded scenes and anti-aliasing.
-- **3D Gaussian Splatting** (2023) — replaces the volumetric field with millions of 3D Gaussians; trains in minutes, renders in real time. The current production default.
+- **Instant-NGP**（2022）—— 用哈希网格编码替代 MLP 的位置输入；数秒内完成训练。
+- **Mip-NeRF 360** —— 处理无界场景与抗锯齿。
+- **3D Gaussian Splatting**（2023）—— 用数百万个三维高斯替代体积场；数分钟训练，实时渲染。当前生产环境中的默认选择。
 
-Almost every real NeRF product in 2026 is actually 3D Gaussian splatting. The mental model is still NeRF.
+到 2026 年，几乎所有实际产品中的“NeRF”其实都是 3D 高斯泼溅。但其心智模型仍是 NeRF。
 
-### Datasets and benchmarks
+### 数据集与基准
 
-- **ShapeNet** — classification and segmentation of 3D CAD models as point clouds.
-- **ScanNet** — real indoor scans for segmentation.
-- **KITTI** — outdoor LIDAR point clouds for autonomous driving.
-- **NeRF Synthetic** / **Blended MVS** — posed-image datasets for view synthesis.
-- **Mip-NeRF 360** dataset — unbounded real scenes.
+- **ShapeNet** —— 以点云形式对三维 CAD 模型进行分类与分割。
+- **ScanNet** —— 真实室内扫描数据，用于分割。
+- **KITTI** —— 户外激光雷达点云，用于自动驾驶。
+- **NeRF Synthetic** / **Blended MVS** —— 带有位姿的图像数据集，用于新视角合成。
+- **Mip-NeRF 360 dataset** —— 无界真实场景。
 
-## Build It
+## 动手实现
 
-### Step 1: PointNet classifier
+### 步骤 1：PointNet 分类器
 
 ```python
 import torch
@@ -164,9 +164,9 @@ print(f"output: {net(pts).shape}")
 print(f"params: {sum(p.numel() for p in net.parameters()):,}")
 ```
 
-About 1.6M parameters. Runs on 1,024 points per cloud.
+约 160 万参数。每朵点云处理 1,024 个点。
 
-### Step 2: Positional encoding
+### 步骤 2：位置编码
 
 ```python
 def positional_encoding(x, L=10):
@@ -184,9 +184,9 @@ print(f"input:  {x.shape}")
 print(f"encoded: {y.shape}     # (5, 60)")
 ```
 
-Multiplying by `2^l * pi` gives progressively higher frequencies.
+乘以 `2^l * pi` 可得到逐级升高的频率。
 
-### Step 3: Tiny NeRF MLP
+### 步骤 3：小型 NeRF MLP
 
 ```python
 class TinyNeRF(nn.Module):
@@ -223,9 +223,9 @@ s, c = nerf(x, d)
 print(f"sigma: {s.shape}   rgb: {c.shape}")
 ```
 
-Tiny compared to the original NeRF (which has 2 MLP trunks of depth 8). Enough to demonstrate the architecture.
+与原始 NeRF（两个深度为 8 的 MLP 主干）相比非常小，但足以展示其架构。
 
-### Step 4: Volumetric rendering along a ray
+### 步骤 4：沿单条光线的体渲染
 
 ```python
 def volumetric_render(sigma, rgb, t_vals):
@@ -252,47 +252,47 @@ print(f"rendered colour: {rendered.tolist()}")
 print(f"depth:           {depth.item():.2f}")
 ```
 
-One ray, 64 samples, composite to a single RGB pixel and a depth.
+一条光线，64 个采样点，合成为一个 RGB 像素和一个深度值。
 
-## Use It
+## 实际应用
 
-For real work:
+真实项目中：
 
-- `nerfstudio` (Tancik et al.) — the current reference library for NeRF / Instant-NGP / Gaussian Splatting. Command-line plus a web viewer.
-- `pytorch3d` (Meta) — differentiable rendering, point-cloud utilities, mesh ops.
-- `open3d` — point cloud processing, registration, visualisation.
+- `nerfstudio`（Tancik 等人）—— 当前 NeRF / Instant-NGP / 高斯泼溅的参考库。提供命令行与 Web 查看器。
+- `pytorch3d`（Meta）—— 可微渲染、点云工具、网格操作。
+- `open3d` —— 点云处理、配准、可视化。
 
-For deployment, 3D Gaussian splatting has largely replaced pure NeRFs because it renders 100x faster. The reconstruction quality is comparable.
+在部署中，3D 高斯泼溅已基本取代纯 NeRF，因为其渲染速度快了约 100 倍。重建质量相当。
 
-## Ship It
+## 交付成果
 
-This lesson produces:
+本课产出：
 
-- `outputs/prompt-3d-task-router.md` — a prompt that routes to the right 3D representation (point cloud, mesh, voxel, NeRF, Gaussian splat) based on task and input data.
-- `outputs/skill-point-cloud-loader.md` — a skill that writes a PyTorch `Dataset` for .ply / .pcd / .xyz files with correct normalisation, centring, and point sampling.
+- `outputs/prompt-3d-task-router.md` —— 一个提示词，根据任务与输入数据将任务路由到合适的 3D 表示（点云、网格、体素、NeRF、高斯泼溅）。
+- `outputs/skill-point-cloud-loader.md` —— 一个技能，编写用于 `.ply` / `.pcd` / `.xyz` 文件的 PyTorch `Dataset`，包含正确的归一化、中心化和点采样。
 
-## Exercises
+## 练习
 
-1. **(Easy)** Show that PointNet is permutation-invariant: run the same cloud through twice, once with points shuffled. Verify outputs are identical up to floating-point noise.
-2. **(Medium)** Implement a minimal ray-generation function that, given camera intrinsics and pose, produces ray origins and directions for every pixel of an H x W image.
-3. **(Hard)** Train a TinyNeRF on a synthetic dataset of rendered views of a coloured cube (generated via differentiable rendering or a simple ray tracer). Report rendering loss at epoch 1, 10, and 100. At what epoch does the model produce recognisable views?
+1. **（简单）** 证明 PointNet 具有置换不变性：将同一朵点云输入两次，一次打乱点的顺序。验证两次输出在浮点误差范围内相同。
+2. **（中等）** 实现一个最小化的光线生成函数：给定相机内参和位姿，为 H x W 图像的每个像素生成光线起点和方向。
+3. **（困难）** 在一个彩色立方体渲染视图组成的小合成数据集上训练 TinyNeRF（可通过可微渲染或简单光线追踪生成）。报告第 1、10、100 个 epoch 的渲染损失。模型在第几个 epoch 能产生可辨认的视图？
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|----------------|----------------------|
-| Point cloud | "3D points from LIDAR" | Unordered set of (x, y, z) + optional features per point |
-| PointNet | "First neural net on point clouds" | Shared MLP per point + symmetric (max) pool; permutation-invariant by construction |
-| NeRF | "MLP that is the scene" | Network mapping (x, y, z, dir) to (density, colour); rendered by ray casting |
-| Positional encoding | "Fourier features" | Encode each coordinate into sin/cos at multiple frequencies to overcome MLP low-frequency bias |
-| Volumetric rendering | "Ray integration" | Composite samples along a ray into a single pixel using transmittance and alpha |
-| Instant-NGP | "Hash-grid NeRF" | Replaces NeRF's coordinate MLP with a multi-resolution hash grid; 100-1000x faster |
-| 3D Gaussian splatting | "Millions of Gaussians" | Scene = collection of 3D Gaussians; renders in real time, trains in minutes |
-| SDF | "Signed distance field" | Function returning signed distance to the nearest surface; another implicit representation |
+| 术语 | 通常说法 | 实际含义 |
+|------|----------|----------|
+| Point cloud | “来自激光雷达的三维点” | 每点为 `(x, y, z)` 加可选特征的无序集合 |
+| PointNet | “首个点云神经网络” | 每点共享 MLP + 对称（最大）池化；结构上具有置换不变性 |
+| NeRF | “作为场景的 MLP” | 将 `(x, y, z, dir)` 映射到 `(密度, 颜色)` 的网络；通过光线投射渲染 |
+| Positional encoding | “傅里叶特征” | 将每个坐标编码成多频率正弦/余弦，以克服 MLP 的低频偏置 |
+| Volumetric rendering | “光线积分” | 利用透射率与 alpha 将沿光线的采样合成为单个像素 |
+| Instant-NGP | “哈希网格 NeRF” | 用多分辨率哈希网格替代 NeRF 的坐标 MLP；速度提升 100–1000 倍 |
+| 3D Gaussian splatting | “数百万高斯” | 场景 = 三维高斯集合；实时渲染，数分钟训练 |
+| SDF | “有符号距离场” | 返回距最近表面有符号距离的函数；另一种隐式表示 |
 
-## Further Reading
+## 延伸阅读
 
-- [PointNet (Qi et al., 2017)](https://arxiv.org/abs/1612.00593) — the permutation-invariant classifier
-- [NeRF (Mildenhall et al., 2020)](https://arxiv.org/abs/2003.08934) — the paper that made 3D reconstruction from photos a neural-net problem
-- [Instant-NGP (Müller et al., 2022)](https://arxiv.org/abs/2201.05989) — hash grids, 1000x speedup
-- [3D Gaussian Splatting (Kerbl et al., 2023)](https://arxiv.org/abs/2308.04079) — the architecture that replaced NeRFs in production
+- [PointNet (Qi et al., 2017)](https://arxiv.org/abs/1612.00593) —— 置换不变分类器
+- [NeRF (Mildenhall et al., 2020)](https://arxiv.org/abs/2003.08934) —— 让从照片重建三维场景成为神经网络问题的论文
+- [Instant-NGP (Müller et al., 2022)](https://arxiv.org/abs/2201.05989) —— 哈希网格，1000 倍加速
+- [3D Gaussian Splatting (Kerbl et al., 2023)](https://arxiv.org/abs/2308.04079) —— 在生产环境中取代 NeRF 的架构

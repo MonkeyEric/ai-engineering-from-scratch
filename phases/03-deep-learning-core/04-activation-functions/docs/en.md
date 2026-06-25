@@ -1,41 +1,41 @@
-# Activation Functions
+# 激活函数
 
-> Without nonlinearity, your 100-layer network is a fancy matrix multiply. Activations are the gates that let neural networks think in curves.
+> 没有非线性，你的 100 层网络不过是一个花哨的矩阵乘法。激活函数是让神经网络能够以曲线方式思考的门。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Lesson 03.03 (Backpropagation)
-**Time:** ~75 minutes
+**类型：** 构建  
+**语言：** Python  
+**前置条件：** 第 03.03 课（反向传播）  
+**时间：** 约 75 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Implement sigmoid, tanh, ReLU, Leaky ReLU, GELU, Swish, and softmax with their derivatives from scratch
-- Diagnose the vanishing gradient problem by measuring activation magnitudes through 10+ layers with different activations
-- Detect dead neurons in a ReLU network and explain why GELU avoids this failure mode
-- Select the correct activation function for a given architecture (transformer, CNN, RNN, output layer)
+- 从零实现 sigmoid、tanh、ReLU、Leaky ReLU、GELU、Swish 和 softmax 及其导数
+- 通过测量不同激活函数在 10+ 层网络中的激活幅度，诊断梯度消失问题
+- 在 ReLU 网络中检测死亡神经元，并解释为什么 GELU 能避免这种失效模式
+- 为给定的架构（Transformer、CNN、RNN、输出层）选择正确的激活函数
 
-## The Problem
+## 问题
 
-Stack two linear transformations: y = W2(W1x + b1) + b2. Expand it: y = W2W1x + W2b1 + b2. That's just y = Ax + c -- a single linear transformation. No matter how many linear layers you stack, the result collapses to one matrix multiply. Your 100-layer network has the same representational power as a single layer.
+堆叠两个线性变换：y = W₂(W₁x + b₁) + b₂。展开它：y = W₂W₁x + W₂b₁ + b₂。这不过是 y = Ax + c —— 一个单一的线性变换。不管你堆叠多少线性层，结果都会坍缩成一个矩阵乘法。你的 100 层网络与单层网络具有相同的表示能力。
 
-This is not a theoretical curiosity. It means a deep linear network literally cannot learn XOR, cannot classify a spiral dataset, cannot recognize a face. Without activation functions, depth is an illusion.
+这不是一个理论上的奇闻。它意味着一个深度线性网络在数学上无法学习 XOR，无法对螺旋数据集进行分类，无法识别一张脸。没有激活函数，深度就是一种幻觉。
 
-Activation functions break the linearity. They warp the output of each layer through a nonlinear function, giving the network the ability to bend decision boundaries, approximate arbitrary functions, and actually learn. But pick the wrong activation and your gradients vanish to zero (sigmoid in deep networks), explode to infinity (unbounded activations without careful initialization), or your neurons die permanently (ReLU with large negative biases). The choice of activation function directly determines whether your network learns at all.
+激活函数打破了线性。它们通过一个非线性函数扭曲每一层的输出，赋予网络弯曲决策边界、逼近任意函数以及真正学习的能力。但选错了激活函数，你的梯度要么消失为零（深度网络中的 sigmoid），要么爆炸到无穷大（无界激活函数加上糟糕的初始化），要么你的神经元永久死亡（带有大负偏置的 ReLU）。激活函数的选择直接决定了你的网络能否学习。
 
-## The Concept
+## 概念
 
-### Why Nonlinearity Is Necessary
+### 为什么非线性是必要的
 
-Matrix multiplication is composable. Multiplying a vector by matrix A then matrix B is identical to multiplying by AB. This means stacking ten linear layers is mathematically equivalent to one linear layer with one big matrix. All those parameters, all that depth -- wasted. You need something to break the chain. That's what activation functions do.
+矩阵乘法是可组合的。将向量先乘以矩阵 A 再乘以矩阵 B，等价于乘以 AB。这意味着堆叠十个线性层在数学上等效于一个带有一个大矩阵的线性层。所有这些参数、所有这些深度——都被浪费了。你需要一些东西来打破这条链。这就是激活函数的作用。
 
-Here is the proof. A linear layer computes f(x) = Wx + b. Stack two:
+证明如下。一个线性层计算 f(x) = Wx + b。堆叠两个：
 
 ```
-Layer 1: h = W1 * x + b1
-Layer 2: y = W2 * h + b2
+第 1 层：h = W1 * x + b1
+第 2 层：y = W2 * h + b2
 ```
 
-Substitute:
+代入：
 
 ```
 y = W2 * (W1 * x + b1) + b2
@@ -43,153 +43,153 @@ y = (W2 * W1) * x + (W2 * b1 + b2)
 y = A * x + c
 ```
 
-One layer. Insert a nonlinear activation g() between layers:
+单层。在层之间插入一个非线性激活 g()：
 
 ```
 h = g(W1 * x + b1)
 y = W2 * h + b2
 ```
 
-Now the substitution breaks. W2 * g(W1 * x + b1) + b2 cannot be reduced to a single linear transformation. The network can represent nonlinear functions. Each additional layer with an activation adds representational capacity.
+现在代入被打破了。W2 * g(W1 * x + b1) + b2 无法化简为单个线性变换。网络可以表示非线性函数。每一层带激活函数的额外层都增加了表示能力。
 
 ### Sigmoid
 
-The original activation function for neural networks.
+神经网络最初的激活函数。
 
 ```
 sigmoid(x) = 1 / (1 + e^(-x))
 ```
 
-Output range: (0, 1). Smooth, differentiable, maps any real number to a probability-like value.
+输出范围：(0, 1)。平滑、可微，将任意实数映射为类似概率的值。
 
-The derivative:
+导数：
 
 ```
 sigmoid'(x) = sigmoid(x) * (1 - sigmoid(x))
 ```
 
-The maximum value of this derivative is 0.25, occurring at x = 0. In backpropagation, gradients multiply through layers. Ten layers of sigmoid means the gradient gets multiplied by at most 0.25 ten times:
+该导数的最大值为 0.25，出现在 x = 0 处。在反向传播中，梯度会逐层相乘。十层 sigmoid 意味着梯度最多乘以 0.25 的十次方：
 
 ```
 0.25^10 = 0.000000953674
 ```
 
-Less than one millionth of the original signal. This is the vanishing gradient problem. Gradients in early layers become so small that weights barely update. The network appears to learn -- loss decreases in later layers -- but the first layers are frozen. Deep sigmoid networks simply do not train.
+不到原始信号的百万分之一。这就是梯度消失问题。浅层的梯度变得如此之小，以至于权重几乎不更新。网络看似在学习——后几层的损失在下降——但前几层是冻结的。深度 sigmoid 网络根本无法训练。
 
-Additional problem: sigmoid outputs are always positive (0 to 1), which means gradients on weights are always the same sign. This causes zig-zagging during gradient descent.
+额外问题：sigmoid 输出始终为正（0 到 1），这意味着权重的梯度符号始终相同。这会导致梯度下降过程中出现锯齿状振荡。
 
 ### Tanh
 
-The centered version of sigmoid.
+Sigmoid 的中心化版本。
 
 ```
 tanh(x) = (e^x - e^(-x)) / (e^x + e^(-x))
 ```
 
-Output range: (-1, 1). Zero-centered, which eliminates the zig-zag problem.
+输出范围：(-1, 1)。零中心化，消除了锯齿问题。
 
-The derivative:
+导数：
 
 ```
 tanh'(x) = 1 - tanh(x)^2
 ```
 
-Maximum derivative is 1.0 at x = 0 -- four times better than sigmoid. But the vanishing gradient problem still exists. For large positive or negative inputs, the derivative approaches zero. Ten layers still crush the gradient, just less aggressively.
+最大导数为 1.0，在 x = 0 处——比 sigmoid 好四倍。但梯度消失问题仍然存在。对于大的正输入或负输入，导数趋近于零。十层仍然会压垮梯度，只是不那么剧烈。
 
-### ReLU: The Breakthrough
+### ReLU：突破
 
-Rectified Linear Unit. Popularized for deep learning by Nair and Hinton in 2010 (the function itself dates to Fukushima's 1969 work), it changed everything.
+修正线性单元。由 Nair 和 Hinton 在 2010 年推广用于深度学习（该函数本身可追溯到福岛邦彦 1969 年的工作），它改变了一切。
 
 ```
 relu(x) = max(0, x)
 ```
 
-Output range: [0, infinity). The derivative is trivially simple:
+输出范围：[0, ∞)。导数极其简单：
 
 ```
-relu'(x) = 1  if x > 0
-            0  if x <= 0
+relu'(x) = 1  如果 x > 0
+          0  如果 x <= 0
 ```
 
-No vanishing gradient for positive inputs. The gradient is exactly 1, passed straight through. This is why deep networks became trainable -- ReLU preserves gradient magnitude across layers.
+对于正输入没有梯度消失。梯度恰好为 1，直接传递。这就是深度网络变得可训练的原因——ReLU 保持了跨层的梯度幅度。
 
-But there is a failure mode: the dead neuron problem. If a neuron's weighted input is always negative (due to a large negative bias or unfortunate weight initialization), its output is always zero, its gradient is always zero, and it never updates. It is permanently dead. In practice, 10-40% of neurons in a ReLU network can die during training.
+但有一个失效模式：死亡神经元问题。如果一个神经元的加权输入始终为负（由于大的负偏置或糟糕的权重初始化），它的输出始终为零，梯度始终为零，因此永远不会更新。它永久死亡。在实践中，ReLU 网络中 10-40% 的神经元可能在训练期间死亡。
 
 ### Leaky ReLU
 
-The simplest fix for dead neurons.
+对死亡神经元最简单的修复。
 
 ```
-leaky_relu(x) = x        if x > 0
-                alpha * x if x <= 0
+leaky_relu(x) = x        如果 x > 0
+               alpha * x 如果 x <= 0
 ```
 
-Where alpha is a small constant, typically 0.01. The negative side has a small slope instead of zero, so dead neurons still get a gradient signal and can recover.
+其中 alpha 是一个小常数，通常为 0.01。负数侧有一个小的斜率而不是零，因此死亡神经元仍能获得梯度信号并可以恢复。
 
-### GELU: The Modern Default
+### GELU：现代默认
 
-Gaussian Error Linear Unit. Introduced by Hendrycks and Gimpel in 2016. Default activation in BERT, GPT, and most modern transformers.
+高斯误差线性单元。由 Hendrycks 和 Gimpel 在 2016 年提出。BERT、GPT 以及大多数现代 Transformer 中的默认激活函数。
 
 ```
 gelu(x) = x * Phi(x)
 ```
 
-Where Phi(x) is the cumulative distribution function of the standard normal distribution. The approximation used in practice:
+其中 Phi(x) 是标准正态分布的累积分布函数。实践中使用的近似：
 
 ```
 gelu(x) ~= 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
 ```
 
-GELU is smooth everywhere, allows small negative values (unlike ReLU which hard-clips to zero), and has a probabilistic interpretation: it weights each input by how likely it is to be positive under a Gaussian distribution. This smooth gating outperforms ReLU in transformer architectures because it provides better gradient flow and avoids the dead neuron problem entirely.
+GELU 处处平滑，允许小的负值（不同于 ReLU 硬截断到零），并且具有概率解释：它根据每个输入在高斯分布下为正的概率来加权输入。这种平滑门控在 Transformer 架构中优于 ReLU，因为它提供了更好的梯度流，并完全避免了死亡神经元问题。
 
 ### Swish / SiLU
 
-Self-gated activation discovered by Ramachandran et al. in 2017 through automated search.
+自门控激活函数，由 Ramachandran 等人在 2017 年通过自动搜索发现。
 
 ```
 swish(x) = x * sigmoid(x)
 ```
 
-Swish is formally x * sigmoid(x). Google discovered it through automated search over activation function space -- a neural network designing parts of neural networks.
+Swish 正式写作 x * sigmoid(x)。Google 通过自动搜索激活函数空间发现它——一个神经网络在设计神经网络的某些部分。
 
-Like GELU, it is smooth, non-monotonic, and allows small negative values. The difference is subtle: Swish uses sigmoid for gating while GELU uses the Gaussian CDF. In practice, performance is nearly identical. Swish is used in EfficientNet and some vision models. GELU dominates in language models.
+和 GELU 一样，它是平滑的、非单调的，并允许小的负值。区别很微妙：Swish 使用 sigmoid 进行门控，而 GELU 使用高斯 CDF。在实践中，性能几乎相同。Swish 用于 EfficientNet 和一些视觉模型。GELU 在语言模型中占主导地位。
 
-### Softmax: The Output Activation
+### Softmax：输出激活
 
-Not used in hidden layers. Softmax converts a vector of raw scores (logits) into a probability distribution.
+不用于隐藏层。Softmax 将原始分数向量（logits）转换为概率分布。
 
 ```
 softmax(x_i) = e^(x_i) / sum(e^(x_j) for all j)
 ```
 
-Every output is between 0 and 1. All outputs sum to 1. This makes it the standard final activation for multi-class classification. The largest logit gets the highest probability, but unlike argmax, softmax is differentiable and preserves information about relative confidence.
+每个输出都在 0 和 1 之间。所有输出之和为 1。这使得它成为多分类的标准最终激活函数。最大的 logit 获得最高概率，但与 argmax 不同，softmax 是可微的，并保留了关于相对置信度的信息。
 
-### Comparison of Shapes
+### 形状对比
 
 ```mermaid
 graph LR
-    subgraph "Activation Functions"
-        S["Sigmoid<br/>Range: (0,1)<br/>Saturates both ends"]
-        T["Tanh<br/>Range: (-1,1)<br/>Zero-centered"]
-        R["ReLU<br/>Range: [0,inf)<br/>Dead neurons"]
-        G["GELU<br/>Range: ~(-0.17,inf)<br/>Smooth gating"]
+    subgraph "激活函数"
+        S["Sigmoid<br/>范围: (0,1)<br/>两端饱和"]
+        T["Tanh<br/>范围: (-1,1)<br/>零中心化"]
+        R["ReLU<br/>范围: [0,∞)<br/>死亡神经元"]
+        G["GELU<br/>范围: ~(-0.17,∞)<br/>平滑门控"]
     end
-    S -->|"Vanishing gradient"| Problem["Deep networks<br/>don't train"]
-    T -->|"Less severe but<br/>still vanishes"| Problem
-    R -->|"Gradient = 1<br/>for x > 0"| Solution["Deep networks<br/>train fast"]
-    G -->|"Smooth gradient<br/>everywhere"| Solution
+    S -->|"梯度消失"| Problem["深度网络<br/>无法训练"]
+    T -->|"不那么严重但<br/>仍然消失"| Problem
+    R -->|"x > 0 时<br/>梯度 = 1"| Solution["深度网络<br/>训练快"]
+    G -->|"处处<br/>平滑梯度"| Solution
 ```
 
-### Gradient Flow Comparison
+### 梯度流对比
 
 ```mermaid
 graph TD
-    Input["Input Signal"] --> L1["Layer 1"]
-    L1 --> L5["Layer 5"]
-    L5 --> L10["Layer 10"]
-    L10 --> Output["Output"]
+    Input["输入信号"] --> L1["第 1 层"]
+    L1 --> L5["第 5 层"]
+    L5 --> L10["第 10 层"]
+    L10 --> Output["输出"]
 
-    subgraph "Gradient at Layer 1"
+    subgraph "第 1 层处的梯度"
         SigGrad["Sigmoid: ~0.000001"]
         TanhGrad["Tanh: ~0.001"]
         ReluGrad["ReLU: ~1.0"]
@@ -197,30 +197,30 @@ graph TD
     end
 ```
 
-### Which Activation When
+### 何时使用哪种激活函数
 
 ```mermaid
 flowchart TD
-    Start["What are you building?"] --> Hidden{"Hidden layers<br/>or output?"}
+    Start["你在构建什么？"] --> Hidden{"隐藏层<br/>还是输出层？"}
 
-    Hidden -->|"Hidden layers"| Arch{"Architecture?"}
-    Hidden -->|"Output layer"| Task{"Task type?"}
+    Hidden -->|"隐藏层"| Arch{"架构？"}
+    Hidden -->|"输出层"| Task{"任务类型？"}
 
-    Arch -->|"Transformer / NLP"| GELU["Use GELU"]
-    Arch -->|"CNN / Vision"| ReLU["Use ReLU or Swish"]
-    Arch -->|"RNN / LSTM"| Tanh["Use Tanh"]
-    Arch -->|"Simple MLP"| ReLU2["Use ReLU"]
+    Arch -->|"Transformer / NLP"| GELU["使用 GELU"]
+    Arch -->|"CNN / 视觉"| ReLU["使用 ReLU 或 Swish"]
+    Arch -->|"RNN / LSTM"| Tanh["使用 Tanh"]
+    Arch -->|"简单 MLP"| ReLU2["使用 ReLU"]
 
-    Task -->|"Binary classification"| Sigmoid["Use Sigmoid"]
-    Task -->|"Multi-class classification"| Softmax["Use Softmax"]
-    Task -->|"Regression"| Linear["Use Linear (no activation)"]
+    Task -->|"二分类"| Sigmoid["使用 Sigmoid"]
+    Task -->|"多分类"| Softmax["使用 Softmax"]
+    Task -->|"回归"| Linear["使用 Linear（无激活）"]
 ```
 
-## Build It
+## 动手实现
 
-### Step 1: Implement All Activation Functions with Derivatives
+### 第 1 步：实现所有激活函数及其导数
 
-Each function takes a single float and returns a float. Each derivative function takes the same input and returns the gradient.
+每个函数接受一个浮点数并返回一个浮点数。每个导数函数接受相同的输入并返回梯度。
 
 ```python
 import math
@@ -274,9 +274,9 @@ def softmax(xs):
     return [e / total for e in exps]
 ```
 
-### Step 2: Visualize Where Gradients Die
+### 第 2 步：可视化梯度在哪里死亡
 
-Compute the gradient at 100 evenly-spaced points from -5 to 5. Print a text histogram showing where each activation's gradient is near-zero.
+计算从 -5 到 5 的 100 个均匀间隔点上的梯度。打印一个文本直方图，显示每种激活函数的梯度在何处接近零。
 
 ```python
 def gradient_scan(name, derivative_fn, start=-5, end=5, n=100):
@@ -291,7 +291,7 @@ def gradient_scan(name, derivative_fn, start=-5, end=5, n=100):
         else:
             healthy += 1
     pct_dead = near_zero / n * 100
-    print(f"{name:15s}: {healthy:3d} healthy, {near_zero:3d} near-zero ({pct_dead:.0f}% dead zone)")
+    print(f"{name:15s}: {healthy:3d} 健康, {near_zero:3d} 接近零 ({pct_dead:.0f}% 死亡区域)")
 
 gradient_scan("Sigmoid", sigmoid_derivative)
 gradient_scan("Tanh", tanh_derivative)
@@ -301,9 +301,9 @@ gradient_scan("GELU", gelu_derivative)
 gradient_scan("Swish", swish_derivative)
 ```
 
-### Step 3: Vanishing Gradient Experiment
+### 第 3 步：梯度消失实验
 
-Forward-pass a signal through N layers using sigmoid vs ReLU. Measure how the activation magnitude changes.
+将信号通过 N 层（使用 sigmoid vs ReLU）前向传播。测量激活幅度如何变化。
 
 ```python
 import random
@@ -312,14 +312,14 @@ def vanishing_gradient_experiment(activation_fn, name, n_layers=10, n_inputs=5):
     random.seed(42)
     values = [random.gauss(0, 1) for _ in range(n_inputs)]
 
-    print(f"\n{name} through {n_layers} layers:")
+    print(f"\n{name} 通过 {n_layers} 层:")
     for layer in range(n_layers):
         weights = [random.gauss(0, 1) for _ in range(n_inputs)]
         z = sum(w * v for w, v in zip(weights, values))
         activated = activation_fn(z)
         magnitude = abs(activated)
         bar = "#" * int(magnitude * 20)
-        print(f"  Layer {layer+1:2d}: magnitude = {magnitude:.6f} {bar}")
+        print(f"  第 {layer+1:2d} 层: 幅度 = {magnitude:.6f} {bar}")
         values = [activated] * n_inputs
 
 vanishing_gradient_experiment(sigmoid, "Sigmoid")
@@ -327,9 +327,9 @@ vanishing_gradient_experiment(relu, "ReLU")
 vanishing_gradient_experiment(gelu, "GELU")
 ```
 
-### Step 4: Dead Neuron Detector
+### 第 4 步：死亡神经元检测器
 
-Create a ReLU network, pass random inputs through it, count how many neurons never fire.
+创建一个 ReLU 网络，将随机输入传入，统计从未激活的神经元数量。
 
 ```python
 def dead_neuron_detector(n_inputs=5, hidden_size=20, n_samples=1000):
@@ -350,23 +350,23 @@ def dead_neuron_detector(n_inputs=5, hidden_size=20, n_samples=1000):
     rarely_fire = sum(1 for c in fire_counts if 0 < c < n_samples * 0.05)
     healthy = hidden_size - dead - rarely_fire
 
-    print(f"\nDead Neuron Report ({hidden_size} neurons, {n_samples} samples):")
-    print(f"  Dead (never fired):     {dead}")
-    print(f"  Barely alive (<5%):     {rarely_fire}")
-    print(f"  Healthy:                {healthy}")
-    print(f"  Dead neuron rate:       {dead/hidden_size*100:.1f}%")
+    print(f"\n死亡神经元报告 ({hidden_size} 个神经元, {n_samples} 个样本):")
+    print(f"  死亡（从未激活）:     {dead}")
+    print(f"  几乎不活跃（<5%）:     {rarely_fire}")
+    print(f"  健康:                {healthy}")
+    print(f"  死亡神经元率:       {dead/hidden_size*100:.1f}%")
 
     for i, c in enumerate(fire_counts):
         status = "DEAD" if c == 0 else "WEAK" if c < n_samples * 0.05 else "OK"
         bar = "#" * (c * 40 // n_samples)
-        print(f"  Neuron {i:2d}: {c:4d}/{n_samples} fires [{status:4s}] {bar}")
+        print(f"  神经元 {i:2d}: {c:4d}/{n_samples} 激活 [{status:4s}] {bar}")
 
 dead_neuron_detector()
 ```
 
-### Step 5: Training Comparison -- Sigmoid vs ReLU vs GELU
+### 第 5 步：训练对比 —— Sigmoid vs ReLU vs GELU
 
-Train the same two-layer network on the circle dataset (points inside a circle = class 1, outside = class 0) with three different activations. Compare convergence speed.
+在圆形数据集（圆内点 = 类别 1，圆外 = 类别 0）上使用三种不同激活函数训练相同的两层网络。比较收敛速度。
 
 ```python
 def make_circle_data(n=200, seed=42):
@@ -433,7 +433,7 @@ class ActivationNetwork:
             accuracy = correct / len(data) * 100
             losses.append(avg_loss)
             if epoch % 50 == 0 or epoch == epochs - 1:
-                print(f"    Epoch {epoch:3d}: loss={avg_loss:.4f}, accuracy={accuracy:.1f}%")
+                print(f"    轮次 {epoch:3d}: loss={avg_loss:.4f}, 准确率={accuracy:.1f}%")
         return losses
 
 
@@ -447,19 +447,19 @@ configs = [
 
 results = {}
 for name, act_fn, act_d_fn in configs:
-    print(f"\n=== Training with {name} ===")
+    print(f"\n=== 使用 {name} 训练 ===")
     net = ActivationNetwork(act_fn, act_d_fn, hidden_size=8, lr=0.1)
     losses = net.train(data, epochs=200)
     results[name] = losses
 
-print("\n=== Final Loss Comparison ===")
+print("\n=== 最终损失对比 ===")
 for name, losses in results.items():
-    print(f"  {name:10s}: start={losses[0]:.4f} -> end={losses[-1]:.4f} (improvement: {(1 - losses[-1]/losses[0])*100:.1f}%)")
+    print(f"  {name:10s}: 起始={losses[0]:.4f} -> 结束={losses[-1]:.4f} (提升: {(1 - losses[-1]/losses[0])*100:.1f}%)")
 ```
 
-## Use It
+## 如何使用（PyTorch）
 
-PyTorch provides all of these as both functional and module forms:
+PyTorch 提供了所有这些激活函数，既有函数形式也有模块形式：
 
 ```python
 import torch
@@ -485,48 +485,48 @@ model = nn.Sequential(
 )
 ```
 
-Hidden layers in a transformer: GELU. Hidden layers in a CNN: ReLU. Output layer for classification: softmax. Output layer for regression: none (linear). Output layer for probabilities: sigmoid. That's it. Start with these defaults. Change them only when you have evidence.
+Transformer 中的隐藏层：GELU。CNN 中的隐藏层：ReLU。分类任务的输出层：softmax。回归任务的输出层：无（线性）。概率输出的输出层：sigmoid。就是这样。从这些默认值开始。只有在有证据时才更改它们。
 
-RNNs and LSTMs use tanh for hidden state and sigmoid for gates, but if you're building from scratch today, you're probably not using RNNs. If neurons are dying in your ReLU network, switch to GELU. Don't reach for Leaky ReLU unless you have a specific reason -- GELU solves the dead neuron problem and gives better gradient flow.
+RNN 和 LSTM 对隐藏状态使用 tanh，对门控使用 sigmoid，但如果你今天从头开始构建，你可能不会使用 RNN。如果你的 ReLU 网络中有神经元死亡，切换到 GELU。除非有特定原因，否则不要使用 Leaky ReLU——GELU 解决了死亡神经元问题并提供了更好的梯度流。
 
-## Ship It
+## 交付内容
 
-This lesson produces:
-- `outputs/prompt-activation-selector.md` -- a reusable prompt that helps you pick the right activation function for any architecture
+本课程产出：
+- `outputs/prompt-activation-selector.md` —— 一个可复用提示，帮助你为任何架构选择正确的激活函数
 
-## Exercises
+## 练习
 
-1. Implement Parametric ReLU (PReLU) where the negative slope alpha is a learnable parameter. Train it on the circle dataset and compare to fixed Leaky ReLU.
+1. 实现参数化 ReLU（PReLU），其中负数侧的斜率 alpha 是一个可学习参数。在圆形数据集上训练它，并与固定的 Leaky ReLU 进行比较。
 
-2. Run the vanishing gradient experiment with 50 layers instead of 10. Plot the magnitude at each layer for sigmoid, tanh, ReLU, and GELU. At which layer does each activation's signal effectively reach zero?
+2. 用 50 层而不是 10 层运行梯度消失实验。绘制 sigmoid、tanh、ReLU 和 GELU 在各层的幅度。每种激活函数在多少层时信号有效达到零？
 
-3. Implement the ELU (Exponential Linear Unit): elu(x) = x if x > 0, alpha * (e^x - 1) if x <= 0. Compare its dead neuron rate to ReLU on the same network.
+3. 实现 ELU（指数线性单元）：elu(x) = x 如果 x > 0，alpha * (e^x - 1) 如果 x <= 0。在相同网络上将其死亡神经元率与 ReLU 进行比较。
 
-4. Build a "gradient health monitor" that runs during training: at each epoch, compute the average gradient magnitude at each layer. Print a warning when any layer's gradient drops below 0.001 or exceeds 100.
+4. 构建一个“梯度健康监视器”，在训练期间运行：在每个轮次，计算每层的平均梯度幅度。当任何层的梯度低于 0.001 或超过 100 时打印警告。
 
-5. Modify the training comparison to use the XOR dataset from Lesson 01 instead of circles. Which activation converges fastest on XOR? Why does this differ from the circle results?
+5. 修改训练对比，使用第 01 课中的 XOR 数据集而不是圆形数据集。哪种激活函数在 XOR 上收敛最快？为什么与圆形数据集的结果不同？
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
+| 术语 | 人们常说的话 | 实际含义 |
 |------|----------------|----------------------|
-| Activation function | "The nonlinear part" | A function applied to each neuron's output that breaks linearity, enabling the network to learn nonlinear mappings |
-| Vanishing gradient | "Gradients disappear in deep networks" | Gradients shrink exponentially through layers when the activation's derivative is less than 1, making early layers untrainable |
-| Exploding gradient | "Gradients blow up" | Gradients grow exponentially through layers when the effective multiplier exceeds 1, causing unstable training |
-| Dead neuron | "A neuron that stopped learning" | A ReLU neuron whose input is permanently negative, producing zero output and zero gradient |
-| Sigmoid | "Squishes values to 0-1" | The logistic function 1/(1+e^-x), historically important but causes vanishing gradients in deep networks |
-| ReLU | "Clips negatives to zero" | max(0, x) -- the activation that made deep learning practical by preserving gradient magnitude |
-| GELU | "The transformer activation" | Gaussian Error Linear Unit, a smooth activation that weights inputs by their probability of being positive |
-| Swish/SiLU | "Self-gated ReLU" | x * sigmoid(x), discovered through automated search, used in EfficientNet |
-| Softmax | "Turns scores into probabilities" | Normalizes a vector of logits into a probability distribution where all values are in (0,1) and sum to 1 |
-| Leaky ReLU | "ReLU that doesn't die" | max(alpha*x, x) where alpha is small (0.01), preventing dead neurons by allowing small negative gradients |
-| Saturation | "The flat part of sigmoid" | Regions where an activation's derivative approaches zero, blocking gradient flow |
-| Logit | "The raw score before softmax" | The unnormalized output of the final layer before applying softmax or sigmoid |
+| 激活函数 | “非线性部分” | 应用于每个神经元输出、打破线性性的函数，使网络能够学习非线性映射 |
+| 梯度消失 | “深度网络中梯度消失了” | 当激活函数的导数小于 1 时，梯度通过各层呈指数收缩，使浅层无法训练 |
+| 梯度爆炸 | “梯度爆炸了” | 当有效乘数超过 1 时，梯度通过各层呈指数增长，导致训练不稳定 |
+| 死亡神经元 | “一个停止学习的神经元” | ReLU 神经元，其输入永久为负，产生零输出和零梯度 |
+| Sigmoid | “将数值压到 0-1” | 逻辑函数 1/(1+e^-x)，历史上重要，但在深度网络中会导致梯度消失 |
+| ReLU | “将负数截断为零” | max(0, x) —— 通过保持梯度幅度使深度学习变得实用的激活函数 |
+| GELU | “Transformer 的激活函数” | 高斯误差线性单元，一种平滑激活函数，根据输入为正的概率进行加权 |
+| Swish/SiLU | “自门控 ReLU” | x * sigmoid(x)，通过自动搜索发现，用于 EfficientNet |
+| Softmax | “将分数转为概率” | 将 logits 向量归一化为概率分布，所有值在 (0,1) 之间且和为 1 |
+| Leaky ReLU | “不会死的 ReLU” | max(alpha*x, x)，其中 alpha 较小（0.01），通过允许小的负梯度防止神经元死亡 |
+| 饱和 | “sigmoid 的平坦部分” | 激活函数的导数趋近零的区域，阻碍梯度流动 |
+| Logit | “softmax 之前的原始分数” | 应用 softmax 或 sigmoid 之前最后一层的未归一化输出 |
 
-## Further Reading
+## 进一步阅读
 
-- Nair & Hinton, "Rectified Linear Units Improve Restricted Boltzmann Machines" (2010) -- the paper that introduced ReLU and enabled training of deep networks
-- Hendrycks & Gimpel, "Gaussian Error Linear Units (GELUs)" (2016) -- introduced the activation function that became the default for transformers
-- Ramachandran et al., "Searching for Activation Functions" (2017) -- used automated search to discover Swish, showing that activation design can be automated
-- Glorot & Bengio, "Understanding the difficulty of training deep feedforward neural networks" (2010) -- the paper that diagnosed vanishing/exploding gradients and proposed Xavier initialization
-- Goodfellow, Bengio, Courville, "Deep Learning" Chapter 6.3 (https://www.deeplearningbook.org/) -- rigorous treatment of hidden units and activation functions
+- Nair & Hinton, "Rectified Linear Units Improve Restricted Boltzmann Machines" (2010) —— 引入 ReLU 并实现深度网络训练的那篇论文
+- Hendrycks & Gimpel, "Gaussian Error Linear Units (GELUs)" (2016) —— 引入了成为 Transformer 默认激活函数的 GELU
+- Ramachandran et al., "Searching for Activation Functions" (2017) —— 使用自动搜索发现 Swish，表明激活函数设计可以自动化
+- Glorot & Bengio, "Understanding the difficulty of training deep feedforward neural networks" (2010) —— 诊断了梯度消失/爆炸并提出了 Xavier 初始化
+- Goodfellow, Bengio, Courville, "Deep Learning" 第 6.3 章 (https://www.deeplearningbook.org/) —— 关于隐藏单元和激活函数的严格论述

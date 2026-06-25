@@ -1,30 +1,30 @@
-# Instance Segmentation — Mask R-CNN
+# 实例分割 — Mask R-CNN
 
-> Add a tiny mask branch to a Faster R-CNN detector and you have instance segmentation. The hard part is RoIAlign, and it is harder than it looks.
+> 在 Faster R-CNN 检测器上加一个轻量掩码分支，就得到了实例分割。难点在于 RoIAlign，而它比你想象的更难。
 
-**Type:** Build + Learn
-**Languages:** Python
-**Prerequisites:** Phase 4 Lesson 06 (YOLO), Phase 4 Lesson 07 (U-Net)
-**Time:** ~75 minutes
+**类型：** 构建 + 学习
+**语言：** Python
+**前置知识：** 第 4 阶段第 06 课（YOLO）、第 4 阶段第 07 课（U-Net）
+**时间：** 约 75 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Trace the Mask R-CNN architecture end-to-end: backbone, FPN, RPN, RoIAlign, box head, mask head
-- Implement RoIAlign from scratch and explain why RoIPool is no longer used
-- Use the torchvision `maskrcnn_resnet50_fpn_v2` pretrained model for production-quality instance masks and read its output format correctly
-- Fine-tune Mask R-CNN on a small custom dataset by replacing the box and mask heads and keeping the backbone frozen
+- 端到端梳理 Mask R-CNN 架构：backbone、FPN、RPN、RoIAlign、box head、mask head
+- 从零实现 RoIAlign，并解释为什么不再使用 RoIPool
+- 使用 torchvision 的 `maskrcnn_resnet50_fpn_v2` 预训练模型生成生产级实例掩码，并正确读取其输出格式
+- 在小规模自定义数据集上微调 Mask R-CNN，替换 box head 与 mask head 并冻结 backbone
 
-## The Problem
+## 问题背景
 
-Semantic segmentation gives you one mask per class. Instance segmentation gives you one mask per object, even when two objects share a class. Counting individuals, tracking across frames, and measuring things (the bounding box of each brick in a wall, each cell in a microscope image) all demand instance segmentation.
+语义分割为每个类别输出一个掩码。实例分割为每个目标输出一个掩码，即使两个目标属于同一类别。统计个体数量、跨帧跟踪、测量尺寸（例如墙中每块砖的包围盒、显微图像中的每个细胞）都需要实例分割。
 
-Mask R-CNN (He et al., 2017) solved this by reframing instance segmentation as detection-plus-a-mask. The design was so clean that for the next five years almost every instance segmentation paper was a Mask R-CNN variant, and the torchvision implementation is still the production default for small to medium datasets.
+Mask R-CNN（He 等人，2017）通过将实例分割重新定义为“检测 + 掩码”解决了这一问题。其设计如此简洁，以至于此后五年内几乎所有实例分割论文都是 Mask R-CNN 的变体；时至今日，torchvision 的实现仍然是中小型数据集的生产默认选择。
 
-The hard engineering problem is sampling: how do you crop a fixed-size feature region out of a proposal box whose corners do not align with pixel boundaries? Getting that wrong costs tenths of a mAP point everywhere. RoIAlign is the answer.
+工程上的核心难点是采样：如何从一个角点不与像素边界对齐的候选框中，裁剪出固定大小的特征区域？一旦出错，mAP 会处处损失零点几个点。RoIAlign 就是答案。
 
-## The Concept
+## 核心概念
 
-### The architecture
+### 网络架构
 
 ```mermaid
 flowchart LR
@@ -45,17 +45,17 @@ flowchart LR
     style OUT fill:#dcfce7,stroke:#16a34a
 ```
 
-Five pieces to understand:
+需要理解的五个部分：
 
-1. **Backbone** — ResNet-50 or ResNet-101 trained on ImageNet. Produces a hierarchy of feature maps at strides 4, 8, 16, 32.
-2. **FPN (Feature Pyramid Network)** — top-down + lateral connections that give every level C channels of semantic-rich features. Detection queries the FPN level matching the object size.
-3. **RPN (Region Proposal Network)** — a small conv head that, at every anchor position, predicts "is there an object here?" and "how do I refine the box?". Produces ~1000 proposals per image.
-4. **RoIAlign** — samples a fixed-size (e.g. 7x7) feature patch from any box on any FPN level. Bilinear sampling, no quantisation.
-5. **Heads** — two-layer box head that refines the box and picks a class, plus a small conv head that outputs a `28x28` binary mask for each proposal.
+1. **Backbone** — 在 ImageNet 上训练的 ResNet-50 或 ResNet-101。生成步长为 4、8、16、32 的多级特征图。
+2. **FPN（特征金字塔网络）** — 自顶向下 + 横向连接，使每一层都具有 C 个通道的语义丰富特征。检测时根据目标尺寸选择对应的 FPN 层。
+3. **RPN（区域提议网络）** — 一个小的卷积头，在每个锚点位置预测“这里是否有目标？”以及“如何修正候选框？”。每张图像生成约 1000 个候选框。
+4. **RoIAlign** — 从任意 FPN 层上的任意候选框中采样固定大小（例如 7x7）的特征块。使用双线性采样，不进行量化。
+5. **Heads** — 两层的 box head 用于精修候选框并选择类别；一个小的卷积头为每个候选框输出一个 `28x28` 的二值掩码。
 
-### Why RoIAlign, not RoIPool
+### 为什么用 RoIAlign，而不是 RoIPool
 
-The original Fast R-CNN used RoIPool, which splits a proposal box into a grid, takes the maximum feature in each cell, and rounds all coordinates to integers. That rounding misaligns the feature map from the input pixel coordinates by up to a full feature-map pixel — small on a 224x224 image, catastrophic when the feature map is stride 32.
+最早的 Fast R-CNN 使用 RoIPool：将候选框划分为网格，取每个单元格内的最大特征，并将所有坐标四舍五入为整数。这种取整会让特征图与输入像素坐标之间产生最多一个特征像素的对齐误差 — 在 224x224 图像上很小，但在步长为 32 的特征图上却是灾难性的。
 
 ```
 RoIPool:
@@ -70,36 +70,36 @@ RoIAlign:
   no rounding anywhere
 ```
 
-RoIAlign lifts mask AP by 3-4 points on COCO for free. Every detector that cares about localisation now uses it — YOLOv7 seg, RT-DETR, Mask2Former alike.
+RoIAlign 在 COCO 上能将 mask AP 免费提升 3-4 个点。如今所有关注定位精度的检测器都在使用它 — YOLOv7 seg、RT-DETR、Mask2Former 概莫能外。
 
-### The RPN in one paragraph
+### RPN 一句话解释
 
-At every position of a feature map, place K anchor boxes of different sizes and shapes. Predict an objectness score for each anchor and a regression offset to turn the anchor into a better-fitting box. Keep the top ~1,000 boxes by score, apply NMS at IoU 0.7, and hand the survivors to the heads. The RPN is trained with its own mini-loss — the same structure as the YOLO loss from Lesson 6, just with two classes (object / no object).
+在特征图的每个位置放置 K 个不同尺寸和形状的锚框。为每个锚框预测一个目标性分数和一个回归偏移量，用于将锚框调整为更贴合目标的框。按分数保留前 ~1000 个框，以 IoU 0.7 做 NMS，将幸存者交给后续 head。RPN 使用自己的小型损失函数训练 — 结构与第 6 课中的 YOLO 损失相同，只是二分类（有目标 / 无目标）。
 
-### The mask head
+### Mask head
 
-For each proposal (after RoIAlign) the mask head is a tiny FCN: four 3x3 convs, a 2x deconv, a final 1x1 conv that produces `num_classes` output channels at `28x28` resolution. Only the channel corresponding to the predicted class is kept; the others are ignored. This decouples mask prediction from classification.
+对于每个候选框（经过 RoIAlign 后），mask head 是一个小型 FCN：四个 3x3 卷积、一个 2x 反卷积、一个最终 1x1 卷积，输出 `num_classes` 个通道的 `28x28` 分辨率。只保留与预测类别对应的通道，其余通道被忽略。这实现了掩码预测与分类的解耦。
 
-Upsample the 28x28 mask to the proposal's original pixel size to produce the final binary mask.
+将 28x28 的掩码上采样到候选框的原始像素大小，得到最终二值掩码。
 
-### Losses
+### 损失函数
 
-Mask R-CNN has four losses added together:
+Mask R-CNN 将四个损失相加：
 
 ```
 L = L_rpn_cls + L_rpn_box + L_box_cls + L_box_reg + L_mask
 ```
 
-- `L_rpn_cls`, `L_rpn_box` — objectness + box regression for the RPN proposals.
-- `L_box_cls` — cross-entropy over (C+1) classes (including background) on the head's classifier.
-- `L_box_reg` — smooth L1 on the head's box refinement.
-- `L_mask` — per-pixel binary cross-entropy on the 28x28 mask output.
+- `L_rpn_cls`、`L_rpn_box` — RPN 候选框的目标性分类损失与框回归损失。
+- `L_box_cls` — head 分类器在 (C+1) 个类别（含背景）上的交叉熵损失。
+- `L_box_reg` — head 框精修的 smooth L1 损失。
+- `L_mask` — 28x28 掩码输出上的逐像素二值交叉熵损失。
 
-Each loss has its own default weight; the torchvision implementation exposes them as constructor arguments.
+每项损失都有各自的默认权重；torchvision 实现通过构造函数参数暴露它们。
 
-### Output format
+### 输出格式
 
-`torchvision.models.detection.maskrcnn_resnet50_fpn_v2` returns a list of dicts, one per image:
+`torchvision.models.detection.maskrcnn_resnet50_fpn_v2` 返回一个字典列表，每张图像对应一个：
 
 ```
 {
@@ -110,13 +110,13 @@ Each loss has its own default weight; the torchvision implementation exposes the
 }
 ```
 
-The mask is full image resolution already. The 28x28 head output has been upsampled internally.
+掩码已经是完整图像分辨率。28x28 的 head 输出已在内部完成上采样。
 
-## Build It
+## 动手实现
 
-### Step 1: RoIAlign from scratch
+### 第一步：从零实现 RoIAlign
 
-This is the one component of Mask R-CNN that is simpler to understand as code than as prose.
+这是 Mask R-CNN 中一个用代码理解比用文字理解更简单的组件。
 
 ```python
 import torch
@@ -124,10 +124,10 @@ import torch.nn.functional as F
 
 def roi_align_single(feature, box, output_size=7, spatial_scale=1 / 16.0):
     """
-    feature: (C, H, W) single-image feature map
-    box: (x1, y1, x2, y2) in original image pixel coordinates
-    output_size: side of the output grid (7 for box head, 14 for mask head)
-    spatial_scale: reciprocal of the feature map stride
+    feature: (C, H, W) 单张图像特征图
+    box: (x1, y1, x2, y2) 原始图像像素坐标
+    output_size: 输出网格边长（box head 用 7，mask head 用 14）
+    spatial_scale: 特征图步长的倒数
     """
     C, H, W = feature.shape
     x1, y1, x2, y2 = [c * spatial_scale - 0.5 for c in box]
@@ -146,9 +146,9 @@ def roi_align_single(feature, box, output_size=7, spatial_scale=1 / 16.0):
     return sampled.squeeze(0)
 ```
 
-Every number is at a bilinearly-sampled position. No rounding, no quantisation, no dropped gradients.
+每个数值都通过双线性采样得到。没有取整、没有量化、没有梯度丢失。
 
-### Step 2: Compare to torchvision's RoIAlign
+### 第二步：与 torchvision 的 RoIAlign 对比
 
 ```python
 from torchvision.ops import roi_align
@@ -164,9 +164,9 @@ print(f"shape theirs: {tuple(theirs.shape)}")
 print(f"max|diff|:    {(ours - theirs).abs().max().item():.3e}")
 ```
 
-With `sampling_ratio=1` and `aligned=True`, the two match to within `1e-5`.
+当 `sampling_ratio=1` 且 `aligned=True` 时，两者差异在 `1e-5` 以内。
 
-### Step 3: Load a pretrained Mask R-CNN
+### 第三步：加载预训练 Mask R-CNN
 
 ```python
 import torch
@@ -178,9 +178,9 @@ print(f"params: {sum(p.numel() for p in model.parameters()):,}")
 print(f"classes (including background): {len(model.roi_heads.box_predictor.cls_score.out_features * [0])}")
 ```
 
-46M parameters, 91 classes (COCO). The first class (id 0) is background; everything the model actually detects starts at id 1.
+4600 万参数、91 个类别（COCO）。第一个类别（id 0）是背景；模型实际检测到的目标从 id 1 开始。
 
-### Step 4: Run inference
+### 第四步：推理
 
 ```python
 with torch.no_grad():
@@ -193,15 +193,15 @@ print(f"scores: {tuple(p['scores'].shape)}")
 print(f"masks:  {tuple(p['masks'].shape)}")
 ```
 
-The mask tensor is shape `(N, 1, H, W)`. Threshold at 0.5 to get a binary mask per object:
+掩码张量的形状为 `(N, 1, H, W)`。以 0.5 为阈值得到每个目标的二值掩码：
 
 ```python
 binary_masks = (p['masks'] > 0.5).squeeze(1)  # (N, H, W) boolean
 ```
 
-### Step 5: Swap the heads for a custom class count
+### 第五步：为自定义类别数替换 head
 
-The common fine-tuning recipe: reuse the backbone, FPN, and RPN; replace the two classifier heads.
+常见的微调方案：复用 backbone、FPN 和 RPN；替换两个分类 head。
 
 ```python
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
@@ -220,17 +220,17 @@ custom = build_custom_maskrcnn(num_classes=5)
 print(f"custom cls_score.out_features: {custom.roi_heads.box_predictor.cls_score.out_features}")
 ```
 
-`num_classes` must include the background class, so a dataset with 4 object classes uses `num_classes=5`.
+`num_classes` 必须包含背景类，因此一个有 4 个目标类别的数据集应使用 `num_classes=5`。
 
-### Step 6: Freeze what does not need training
+### 第六步：冻结不需要训练的层
 
-On small datasets, freeze the backbone and the FPN. Only the RPN objectness + regression and the two heads learn.
+在小数据集上，冻结 backbone 和 FPN。只让 RPN 的目标性 + 回归以及两个 head 参与学习。
 
 ```python
 def freeze_backbone_and_fpn(model):
-    # torchvision Mask R-CNN packs the FPN inside `model.backbone` (as
-    # `model.backbone.fpn`), so iterating `model.backbone.parameters()` covers
-    # both the ResNet feature layers and the FPN lateral/output convs.
+    # torchvision 的 Mask R-CNN 将 FPN 封装在 `model.backbone` 内部（即
+    # `model.backbone.fpn`），因此遍历 `model.backbone.parameters()` 会同时覆盖
+    # ResNet 特征层和 FPN 横向/输出卷积。
     for p in model.backbone.parameters():
         p.requires_grad = False
     return model
@@ -240,11 +240,11 @@ trainable = sum(p.numel() for p in custom.parameters() if p.requires_grad)
 print(f"trainable after freeze: {trainable:,}")
 ```
 
-On 500-image datasets this is the difference between convergence and overfitting.
+在 500 张图像的数据集上，这一步决定了模型是能收敛还是会过拟合。
 
-## Use It
+## 应用
 
-The full training loop for Mask R-CNN in torchvision is 40 lines and does not change meaningfully between tasks — swap datasets and go.
+torchvision 中 Mask R-CNN 的完整训练循环只有 40 行，且在不同任务之间几乎没有本质区别 — 换数据集即可。
 
 ```python
 def train_step(model, images, targets, optimizer):
@@ -257,39 +257,39 @@ def train_step(model, images, targets, optimizer):
     return {k: v.item() for k, v in loss_dict.items()}
 ```
 
-The `targets` list must have per-image dicts with `boxes`, `labels`, and `masks` (as `(num_instances, H, W)` binary tensors). The model returns a dict of four losses during training and a list of predictions during eval, keyed on `model.training`.
+`targets` 列表必须包含每张图像的字典，其中有 `boxes`、`labels` 和 `masks`（形状为 `(num_instances, H, W)` 的二值张量）。训练时模型返回一个包含四项损失的字典；评估时返回预测列表，具体取决于 `model.training`。
 
-The `pycocotools` evaluator produces mAP@IoU=0.5:0.95 both for boxes and for masks; you need both numbers to know if the box head or the mask head is the bottleneck.
+`pycocotools` 评估器会同时输出 box 和 mask 的 mAP@IoU=0.5:0.95；你需要同时关注这两个数值，才能判断是 box head 还是 mask head 成为瓶颈。
 
-## Ship It
+## 交付
 
-This lesson produces:
+本课产出：
 
-- `outputs/prompt-instance-vs-semantic-router.md` — a prompt that asks three questions and picks instance vs semantic vs panoptic plus the exact model to start with.
-- `outputs/skill-mask-rcnn-head-swapper.md` — a skill that generates the 10 lines of code for swapping heads on any torchvision detection model, given the new `num_classes`.
+- `outputs/prompt-instance-vs-semantic-router.md` — 一个通过三个问题判断应使用实例分割、语义分割还是全景分割，并给出应首选模型的提示词。
+- `outputs/skill-mask-rcnn-head-swapper.md` — 一个 skill，根据新的 `num_classes` 生成用于替换任意 torchvision 检测模型 head 的 10 行代码。
 
-## Exercises
+## 练习
 
-1. **(Easy)** Verify your RoIAlign against `torchvision.ops.roi_align` on 100 random boxes. Report the max absolute difference. Also run RoIPool (pre-2017 behaviour) and show it diverges by ~1-2 feature-map pixels on boxes near the border.
-2. **(Medium)** Fine-tune `maskrcnn_resnet50_fpn_v2` on a 50-image custom dataset (any two classes: balloons, fish, pothole, logos). Freeze the backbone, train for 20 epochs, report mask AP@0.5.
-3. **(Hard)** Replace Mask R-CNN's mask head with one that predicts at 56x56 instead of 28x28. Measure mAP@IoU=0.75 before and after. Explain why the gain (or lack of one) matches the expected boundary-precision / memory trade-off.
+1. **（简单）** 在 100 个随机框上验证你的 RoIAlign 与 `torchvision.ops.roi_align` 的一致性。报告最大绝对差值。同时运行 RoIPool（2017 年前的行为），并展示它在靠近边界的框上会偏差约 1-2 个特征像素。
+2. **（中等）** 在 50 张图像的自定义数据集上微调 `maskrcnn_resnet50_fpn_v2`（任意两个类别：气球、鱼、坑洼、logo 均可）。冻结 backbone，训练 20 个 epoch，报告 mask AP@0.5。
+3. **（困难）** 将 Mask R-CNN 的 mask head 替换为输出 56x56 而非 28x28 的版本。测量替换前后的 mAP@IoU=0.75。解释性能提升（或没有提升）为何符合边界精度 / 内存开销的权衡预期。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
+| 术语 | 通常说法 | 实际含义 |
 |------|----------------|----------------------|
-| Mask R-CNN | "Detection plus masks" | Faster R-CNN + a small FCN head that predicts a 28x28 mask per proposal per class |
-| FPN | "Feature pyramid" | Top-down + lateral connections that give every stride level C channels of semantic-rich features |
-| RPN | "Region proposer" | A small conv head that produces ~1000 object/no-object proposals per image |
-| RoIAlign | "No-rounding crop" | Bilinearly samples a fixed-size feature grid from any float-coordinate box |
-| RoIPool | "Pre-2017 crop" | Same purpose as RoIAlign but rounds box coordinates; obsolete |
-| Mask AP | "Instance mAP" | Average precision computed with mask IoU instead of box IoU; the COCO instance segmentation metric |
-| Binary mask head | "Per-class mask" | Predicts one binary mask per class for each proposal; only the predicted class's channel is kept |
-| Background class | "Class 0" | The catch-all "no object" class; indices for real classes start at 1 |
+| Mask R-CNN | “检测加掩码” | Faster R-CNN + 一个为每个候选框、每个类别预测 28x28 掩码的小型 FCN head |
+| FPN | “特征金字塔” | 自顶向下 + 横向连接，使每个步长层级都拥有 C 个通道的语义丰富特征 |
+| RPN | “区域提议网络” | 一个小的卷积头，每张图像生成约 1000 个有目标 / 无目标的候选框 |
+| RoIAlign | “无取整裁剪” | 从任意浮点坐标框中双线性采样固定大小特征网格 |
+| RoIPool | “2017 年前的裁剪” | 用途与 RoIAlign 相同，但会对框坐标取整；已过时 |
+| Mask AP | “实例 mAP” | 使用掩码 IoU 而非框 IoU 计算的平均精度；COCO 实例分割指标 |
+| 二值 mask head | “每类掩码” | 为每个候选框预测每个类别的一个二值掩码；只保留预测类别对应的通道 |
+| 背景类 | “类别 0” | 通用的“无目标”类别；真实类别的索引从 1 开始 |
 
-## Further Reading
+## 延伸阅读
 
-- [Mask R-CNN (He et al., 2017)](https://arxiv.org/abs/1703.06870) — the paper; section 3 on RoIAlign is the critical read
-- [FPN: Feature Pyramid Networks (Lin et al., 2017)](https://arxiv.org/abs/1612.03144) — the FPN paper; every modern detector uses it
-- [torchvision Mask R-CNN tutorial](https://pytorch.org/tutorials/intermediate/torchvision_tutorial.html) — the reference for the fine-tuning loop
-- [Detectron2 model zoo](https://github.com/facebookresearch/detectron2/blob/main/MODEL_ZOO.md) — production implementations with trained weights for nearly every detection and segmentation variant
+- [Mask R-CNN（He 等人，2017）](https://arxiv.org/abs/1703.06870) — 原论文；第 3 节关于 RoIAlign 是必读内容
+- [FPN：Feature Pyramid Networks（Lin 等人，2017）](https://arxiv.org/abs/1612.03144) — FPN 论文；现代检测器都在使用它
+- [torchvision Mask R-CNN 教程](https://pytorch.org/tutorials/intermediate/torchvision_tutorial.html) — 微调循环的权威参考
+- [Detectron2 model zoo](https://github.com/facebookresearch/detectron2/blob/main/MODEL_ZOO.md) — 生产级实现，包含几乎所有检测与分割变体的训练权重

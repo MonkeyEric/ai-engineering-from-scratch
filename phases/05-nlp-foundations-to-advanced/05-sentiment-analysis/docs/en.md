@@ -1,34 +1,34 @@
-# Sentiment Analysis
+# 情感分析
 
-> The canonical NLP task. Most of what you need to know about classical text classification shows up here.
+> 最经典的 NLP 任务。关于经典文本分类，你所需知道的大部分内容都能在这里找到。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 5 · 02 (BoW + TF-IDF), Phase 2 · 14 (Naive Bayes)
-**Time:** ~75 minutes
+**类型：** 构建
+**语言：** Python
+**先修：** Phase 5 · 02（词袋模型 + TF-IDF），Phase 2 · 14（朴素贝叶斯）
+**时长：** 约 75 分钟
 
-## The Problem
+## 问题定义
 
-"The food was not great." Positive or negative?
+"The food was not great." 是正面还是负面？
 
-Sentiment sounds simple. A reviewer said they liked or did not like something. Label the sentence. The reason it became the canonical NLP task is that every easy-looking case hides a hard one. Negation flips meaning. Sarcasm inverts it. "Not bad at all" is positive despite two negative-coded words. Emojis carry more signal than surrounding text. Domain vocabulary matters (`tight` in music review versus `tight` in fashion review).
+情感分析听起来很简单。评论者说他喜欢或不喜欢某样东西，给句子打个标签。它之所以成为最经典的 NLP 任务，是因为每个看似简单的案例背后都藏着一个困难的案例。否定会翻转语义，讽刺会反转语义。"Not bad at all" 是正面的，尽管它包含两个带负面色彩的词。表情符号携带的信号往往比周围文字更强。领域词汇也很重要（`tight` 在音乐评论里和时尚评论里含义不同）。
 
-Sentiment is a working lab for classical NLP. If you understand why every naive baseline has a specific failure mode, you understand why every richer model was invented. This lesson builds a Naive Bayes baseline from scratch, adds logistic regression, and names the traps that make production sentiment a compliance-grade problem.
+情感分析是经典 NLP 的一个活实验室。如果你理解为什么每个朴素基线都有特定的失效模式，你就理解了为什么人们会发明更复杂的模型。本节课从零实现一个朴素贝叶斯基线，加入逻辑回归，并指出那些让生产级情感分析成为合规级难题的陷阱。
 
-## The Concept
+## 核心概念
 
-Classical sentiment is a two-step recipe.
+经典情感分析分两步。
 
-1. **Represent.** Turn the text into a feature vector. BoW, TF-IDF, or n-grams.
-2. **Classify.** Fit a linear model (Naive Bayes, logistic regression, SVM) on labeled examples.
+1. **表示。** 把文本转换成特征向量。词袋模型、TF-IDF 或 n-gram。
+2. **分类。** 在有标注样本上拟合一个线性模型（朴素贝叶斯、逻辑回归、SVM）。
 
-Naive Bayes is the dumbest model that works. Assume every feature is independent given the label. Estimate `P(word | positive)` and `P(word | negative)` from counts. At inference, multiply the probabilities. The "naive" independence assumption is laughably wrong and yet the results are shockingly strong. The reason: with sparse text features and moderate data, the classifier cares about which side each word leans toward more than how much.
+朴素贝叶斯是"最笨但能用"的模型。假设每个特征在给定标签下相互独立。从计数中估计 `P(word | positive)` 和 `P(word | negative)`。推理时把概率相乘。"朴素"的独立性假设错得离谱，结果却出奇地好。原因在于：面对稀疏文本特征和中等规模数据时，分类器更关心每个词偏向哪一侧，而不是词与词之间的依赖关系。
 
-Logistic regression fixes the independence assumption. It learns a weight per feature, including negative weights. `not good` as a bigram feature gets a negative weight. Naive Bayes cannot do that for bigrams it has never labeled.
+逻辑回归修正了独立性假设。它为每个特征学习一个权重，包括负权重。`not good` 作为一个 bigram 特征会学到负权重，而朴素贝叶斯无法为从未标注过的 bigram 做到这一点。
 
-## Build It
+## 动手实现
 
-### Step 1: a real mini-dataset
+### 步骤 1：一个真实的微型数据集
 
 ```python
 POSITIVE = [
@@ -48,9 +48,9 @@ NEGATIVE = [
 ]
 ```
 
-Small on purpose. Real work uses tens of thousands of examples (IMDb, SST-2, Yelp polarity). The math is identical.
+故意设得很小。实际工作中会使用数万个样本（IMDb、SST-2、Yelp polarity）。数学原理完全相同。
 
-### Step 2: multinomial Naive Bayes from scratch
+### 步骤 2：从零实现多项式朴素贝叶斯
 
 ```python
 import math
@@ -86,9 +86,9 @@ def predict_nb(doc, class_priors, class_word_probs):
     return max(scores, key=scores.get)
 ```
 
-Additive smoothing (alpha=1.0) is Laplace smoothing. Without it, a word unseen in a class has probability zero and the log explodes. `alpha=0.01` is common in practice. `alpha=1.0` is the teaching default.
+加法平滑（alpha=1.0）即拉普拉斯平滑。没有它，类别中未出现的词概率为零，对数会爆炸。实践中常用 `alpha=0.01`，`alpha=1.0` 是教学默认值。
 
-### Step 3: logistic regression from scratch
+### 步骤 3：从零实现逻辑回归
 
 ```python
 import numpy as np
@@ -117,13 +117,13 @@ def predict_lr(X, w, b):
     return (sigmoid(X @ w + b) >= 0.5).astype(int)
 ```
 
-L2 regularization matters here. Text features are sparse; without L2 the model memorizes training examples. Start at `0.01` and tune.
+这里 L2 正则化很重要。文本特征稀疏，没有 L2 模型会记住训练样本。从 `0.01` 开始并调参。
 
-### Step 4: handling negation (the failure mode)
+### 步骤 4：处理否定（失效模式）
 
-Consider "not good" and "not bad". A BoW classifier sees `{not, good}` and `{not, bad}` and learns from whichever showed up more in training. A bigram classifier sees `not_good` and `not_bad` and learns them as distinct features. That is usually enough.
+考虑 "not good" 和 "not bad"。词袋分类器看到的是 `{not, good}` 和 `{not, bad}`，只能从训练集中哪个出现更多来学习。Bigram 分类器看到的是 `not_good` 和 `not_bad`，把它们当作不同特征来学习。通常这就够了。
 
-A cruder fix that works when you do not have bigrams: **negation scoping**. Prefix tokens following a negation word with `NOT_` up to the next punctuation.
+当你没有 bigram 时，一个更粗糙但有效的做法是**否定范围标注**：在否定词之后、下一个标点之前，给每个 token 加上 `NOT_` 前缀。
 
 ```python
 NEGATION_WORDS = {"not", "no", "never", "nor", "none", "nothing", "neither"}
@@ -151,21 +151,21 @@ def apply_negation(tokens):
 ['not', 'NOT_good', 'NOT_at', 'NOT_all', '.', 'but', 'funny']
 ```
 
-Now `good` and `NOT_good` are different features. The classifier can weight them opposite. Three lines of preprocessing, measurable accuracy jump on sentiment benchmarks.
+现在 `good` 和 `NOT_good` 成了不同特征，分类器可以给它们相反的权重。三行预处理，就能在情感基准上带来可测量的准确率提升。
 
-### Step 5: evaluation metrics that matter
+### 步骤 5：真正重要的评估指标
 
-Accuracy alone is misleading if classes are imbalanced. Real sentiment corpora are usually 70-80% positive or 70-80% negative; a constant-majority classifier gets 80% accuracy and is worthless. Report every one of the following:
+类别不平衡时，仅看准确率会误导。真实情感语料库通常是 70-80% 正面或 70-80% 负面；一个永远预测多数类的分类器也能拿到 80% 的准确率，但毫无价值。以下每一项都要报告：
 
-- **Per-class precision and recall.** One pair per class. Macro-average them to get a single number that respects class balance.
-- **Macro-F1 (primary metric for imbalanced data).** Mean of per-class F1 scores, equally weighted. Use this instead of accuracy when classes are imbalanced.
-- **Weighted-F1 (alternative).** Same as macro but weighted by class frequency. Report alongside macro-F1 when the imbalance itself has business meaning.
-- **Confusion matrix.** Raw counts. Always inspect before trusting any scalar metric; it reveals which pair of classes the model confuses.
-- **Per-class error samples.** Pull 5 wrong predictions per class. Read them. Nothing replaces reading the actual errors.
+- **每类精确率与召回率。** 每个类别各一对。对它们做宏平均，得到一个尊重类别平衡的单一数值。
+- **Macro-F1（不平衡数据的首选指标）。** 每类 F1 的等权平均。类别不平衡时用它代替准确率。
+- **Weighted-F1（替代指标）。** 与 macro 类似，但按类别频次加权。当不平衡本身具有业务含义时，可与 macro-F1 一起报告。
+- **混淆矩阵。** 原始计数。在相信任何单一指标之前，务必先查看混淆矩阵；它能揭示模型混淆的是哪两个类别。
+- **每类错误样本。** 每个类别抽取 5 个错误预测并亲自阅读。没有什么能替代阅读真实错误。
 
-For severely imbalanced data (> 95-5 ratio), report **AUROC** and **AUPRC** instead of accuracy. AUPRC is more sensitive to the minority class, which is what you usually care about (spam, fraud, rare sentiment).
+对于严重不平衡的数据（比例 > 95:5），应报告 **AUROC** 和 **AUPRC**，而非准确率。AUPRC 对少数类更敏感，而这通常正是你关心的（垃圾信息、欺诈、罕见情感）。
 
-**Common bug to avoid.** Reporting micro-F1 instead of macro-F1 on imbalanced data gives a number that looks high because it is dominated by the majority class. Macro-F1 forces you to see the minority-class performance.
+**需要避免的常见错误。** 在不平衡数据上报告 micro-F1 会得到一个看起来很高的数字，因为它被多数类主导。Macro-F1 会强迫你看到少数类的表现。
 
 ```python
 def evaluate(y_true, y_pred):
@@ -179,9 +179,9 @@ def evaluate(y_true, y_pred):
     return {"tp": tp, "fp": fp, "tn": tn, "fn": fn, "precision": precision, "recall": recall, "f1": f1}
 ```
 
-## Use It
+## 应用
 
-scikit-learn does it in six lines, correctly.
+scikit-learn 用六行就能正确实现。
 
 ```python
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -196,61 +196,61 @@ pipe.fit(X_train, y_train)
 print(pipe.score(X_test, y_test))
 ```
 
-Three things to notice. `stop_words=None` keeps negations. `ngram_range=(1, 2)` adds bigrams so `not_good` becomes a feature. `sublinear_tf=True` dampens repeated words. These three flags are the difference between a 75%-accurate baseline and an 85%-accurate baseline on SST-2.
+注意三件事。`stop_words=None` 保留否定词。`ngram_range=(1, 2)` 加入 bigram，让 `not_good` 成为特征。`sublinear_tf=True` 减弱重复词的影响。这三个参数就是把 SST-2 上 75% 准确率基线提升到 85% 的关键。
 
-### When to reach for a transformer
+### 什么时候该用 Transformer
 
-- Sarcasm detection. Classical models fail here. Period.
-- Long reviews where sentiment shifts mid-document.
-- Aspect-based sentiment. "Camera was great but battery was terrible." You need to attribute sentiment to aspects. Transformers or structured output models only.
-- Non-English, low-resource languages. Multilingual BERT gives you a zero-shot baseline for free.
+- 讽刺检测。经典模型在这里完全失效。
+- 长评论，情感在文档中间发生转折。
+- 基于方面的情感分析。"Camera was great but battery was terrible." 你需要把情感归因到不同方面。只有 Transformer 或结构化输出模型能做到。
+- 非英语、低资源语言。多语言 BERT 能免费提供零样本基线。
 
-If you need any of the above, skip ahead to phase 7 (transformers deep dive). Otherwise, Naive Bayes or logistic regression on TF-IDF plus bigrams plus negation handling is your 2026 production baseline.
+如果你需要以上任何一种，跳到 phase 7（Transformer 深入）。否则，TF-IDF + bigram + 否定处理的朴素贝叶斯或逻辑回归，就是你 2026 年的生产级基线。
 
-### The reproducibility trap (again)
+### 可复现性陷阱（再次强调）
 
-Retraining sentiment models is routine. Re-evaluating them is not. Accuracy numbers reported in papers use specific splits, specific preprocessing, specific tokenizers. If you compare your new model to a baseline without using the identical pipeline, you will get misleading deltas. Always regenerate the baseline on your pipeline, not the paper's number.
+重新训练情感模型是常规操作，重新评估却不是。论文中报告的准确率来自特定的划分、特定的预处理、特定的分词器。如果你在比较新模型和基线时没有使用完全相同的流程，得到的差异就会具有误导性。始终要在你的流程上重新生成基线，而不是直接引用论文里的数字。
 
-## Ship It
+## 交付
 
-Save as `outputs/prompt-sentiment-baseline.md`:
+保存为 `outputs/prompt-sentiment-baseline.md`：
 
 ```markdown
 ---
 name: sentiment-baseline
-description: Design a sentiment analysis baseline for a new dataset.
+description: 为新数据集设计情感分析基线。
 phase: 5
 lesson: 05
 ---
 
-Given a dataset description (domain, language, size, label granularity, latency budget), you output:
+给定数据集描述（领域、语言、规模、标签粒度、延迟预算），你输出：
 
-1. Feature extraction recipe. Specify tokenizer, n-gram range, stopword policy (usually keep), negation handling (scoped prefix or bigrams).
-2. Classifier. Naive Bayes for baseline, logistic regression for production, transformer only if the domain needs sarcasm / aspects / cross-lingual.
-3. Evaluation plan. Report precision, recall, F1, confusion matrix, and per-class error samples (not just scalars).
-4. One failure mode to monitor post-deployment. Domain drift and sarcasm are the top two.
+1. 特征提取方案。指定分词器、n-gram 范围、停用词策略（通常保留）、否定处理（范围前缀或 bigram）。
+2. 分类器。基线用朴素贝叶斯，生产用逻辑回归，仅在领域需要讽刺/方面/跨语言时才用 Transformer。
+3. 评估计划。报告精确率、召回率、F1、混淆矩阵和每类错误样本（不要只报标量）。
+4. 上线后需要监控的一种失效模式。领域漂移和讽刺是两大首要问题。
 
-Refuse to recommend dropping stopwords for sentiment tasks. Refuse to report accuracy as the sole metric when classes are imbalanced (e.g., 90% positive). Flag subword-rich languages as needing FastText or transformer embeddings over word-level TF-IDF.
+拒绝在情感任务中建议去除停用词。当类别不平衡时（例如 90% 正面），拒绝把准确率作为唯一指标。对子词丰富的语言，应标注为需要 FastText 或 Transformer 嵌入，而非词级 TF-IDF。
 ```
 
-## Exercises
+## 练习
 
-1. **Easy.** Add `apply_negation` as a preprocessing step in the scikit-learn pipeline and measure the F1 delta on a small sentiment dataset.
-2. **Medium.** Implement class-weighted logistic regression (pass `class_weight="balanced"` to scikit-learn, or derive the gradient yourself). Measure the effect on a synthetic 90-10 class imbalance.
-3. **Hard.** Build a sarcasm detector by training a second classifier on the residuals of the sentiment model. Document your experimental setup. Warn the reader when your accuracy is below chance (chance-level on 2-class sarcasm is ~50%, and most first attempts land there).
+1. **简单。** 在 scikit-learn 流程中加入 `apply_negation` 作为预处理步骤，并在小型情感数据集上测量 F1 变化。
+2. **中等。** 实现类别加权逻辑回归（向 scikit-learn 传入 `class_weight="balanced"`，或自己推导梯度）。在合成的 90-10 类别不平衡数据上测量其影响。
+3. **困难。** 通过训练第二个分类器来拟合情感模型的残差，构建一个讽刺检测器。记录实验设置。当准确率低于随机水平时提醒读者（二分类讽刺检测的随机水平约为 50%，而大多数第一次尝试都会落在那里）。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|-----------------|-----------------------|
-| Polarity | Positive or negative | Binary label; sometimes extended to neutral or fine-grained (5-star). |
-| Aspect-based sentiment | Per-aspect polarity | Attribute sentiment to specific entities or attributes mentioned in text. |
-| Negation scoping | Reversing nearby tokens | Prefix tokens after "not" with `NOT_` until punctuation. |
-| Laplace smoothing | Adding 1 to counts | Prevents zero-probability features in Naive Bayes. |
-| L2 regularization | Shrinking weights | Adds `lambda * sum(w^2)` to loss. Essential for sparse text features. |
+| 术语 | 人们的说法 | 实际含义 |
+|------|-----------|---------|
+| Polarity（极性） | 正面或负面 | 二分类标签；有时也会扩展到中性或细粒度（5 星）。 |
+| Aspect-based sentiment（基于方面的情感分析） | 每个方面的极性 | 把情感归因到文本中提到的具体实体或属性。 |
+| Negation scoping（否定范围） | 翻转附近 token | 在 "not" 之后直到标点的 token 加上 `NOT_` 前缀。 |
+| Laplace smoothing（拉普拉斯平滑） | 计数加 1 | 防止朴素贝叶斯中出现零概率特征。 |
+| L2 regularization（L2 正则化） | 收缩权重 | 向损失中加入 `lambda * sum(w^2)`。对稀疏文本特征至关重要。 |
 
-## Further Reading
+## 延伸阅读
 
-- [Pang and Lee (2008). Opinion Mining and Sentiment Analysis](https://www.cs.cornell.edu/home/llee/opinion-mining-sentiment-analysis-survey.html) — the foundational survey. Long, but the first four sections cover everything classical.
-- [Wang and Manning (2012). Baselines and Bigrams: Simple, Good Sentiment and Topic Classification](https://aclanthology.org/P12-2018/) — the paper that showed bigrams + Naive Bayes is hard to beat on short text.
-- [scikit-learn text feature extraction docs](https://scikit-learn.org/stable/modules/feature_extraction.html#text-feature-extraction) — reference for `CountVectorizer`, `TfidfVectorizer`, and every knob you'll tune.
+- [Pang and Lee (2008). Opinion Mining and Sentiment Analysis](https://www.cs.cornell.edu/home/llee/opinion-mining-sentiment-analysis-survey.html) —— 奠基性综述。很长，但前四节涵盖了所有经典内容。
+- [Wang and Manning (2012). Baselines and Bigrams: Simple, Good Sentiment and Topic Classification](https://aclanthology.org/P12-2018/) —— 这篇论文证明了 bigram + 朴素贝叶斯在短文本上很难被击败。
+- [scikit-learn text feature extraction docs](https://scikit-learn.org/stable/modules/feature_extraction.html#text-feature-extraction) —— `CountVectorizer`、`TfidfVectorizer` 以及你要调节的每个参数的参考文档。

@@ -1,32 +1,32 @@
-# Object Detection — YOLO from Scratch
+# 目标检测——从零实现 YOLO
 
-> Detection is classification plus regression, run at every position in a feature map, then cleaned up with non-maximum suppression.
+> 检测就是分类加回归，在特征图的每个位置都运行一次，然后用非极大值抑制进行清理。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 4 Lesson 03 (CNNs), Phase 4 Lesson 04 (Image Classification), Phase 4 Lesson 05 (Transfer Learning)
-**Time:** ~75 minutes
+**类型：** Build
+**语言：** Python
+**前置要求：** Phase 4 Lesson 03（CNN）、Phase 4 Lesson 04（图像分类）、Phase 4 Lesson 05（迁移学习）
+**时长：** 约 75 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Explain the grid-and-anchor design that turns detection into a dense prediction problem and state what every number in the output tensor means
-- Compute Intersection-over-Union between boxes and implement non-maximum suppression from scratch
-- Build a minimal YOLO-style head on top of a pretrained backbone, including the classification, objectness, and box-regression losses
-- Read a detection metric row (precision@0.5, recall, mAP@0.5, mAP@0.5:0.95) and pick which knob to turn next
+- 解释将检测转化为密集预测任务的网格-锚点设计，并说明输出张量中每个数字的含义
+- 计算框之间的交并比（IoU），并从零实现非极大值抑制
+- 在预训练骨干网络之上构建一个最简的 YOLO 风格检测头，包括分类、目标度和框回归损失
+- 读懂检测指标行（precision@0.5、recall、mAP@0.5、mAP@0.5:0.95），并决定下一步该调哪个旋钮
 
-## The Problem
+## 问题背景
 
-Classification says "this image is a dog." Detection says "there is a dog at pixels (112, 40, 280, 210), there is a cat at (400, 180, 560, 310), and nothing else in the frame." That one structural change — predicting a variable number of labelled boxes instead of one label per image — is what every autonomous system, every surveillance product, every document layout parser, and every factory vision line depends on.
+分类会说“这张图是一只狗。”检测则会说“在像素 (112, 40, 280, 210) 处有一只狗，在 (400, 180, 560, 310) 处有一只猫，画面中其他位置没有东西。”这一结构性变化——从每张图一个标签变为预测可变数量的带标签边界框——正是每一个自动驾驶系统、每一款安防产品、每一个文档版式解析器和每一条工厂视觉产线所依赖的核心。
 
-Detection is also where every engineering trade-off in vision shows up at once. You want boxes that are accurate (regression head), you want the right class for each box (classification head), you want the model to know when there is nothing to detect (objectness score), and you want exactly one prediction per real object (non-maximum suppression). Miss any of these and the pipeline either misses objects, reports hallucinated boxes, or predicts the same object fifteen times in slightly different positions.
+检测也是视觉领域中所有工程取舍同时涌现的地方。你需要框足够精准（回归头）、每个框的类别正确（分类头）、模型知道何时没有目标可检（目标度分数），并且每个真实目标只产生一个预测（非极大值抑制）。遗漏其中任何一项，整个流水线就会要么漏检、要么报告幻觉框，要么把同一个目标在稍有偏移的位置预测十五次。
 
-YOLO (You Only Look Once, Redmon et al. 2016) was the design that made all of this run in real time by doing it with a single forward pass of a conv net, and the same structural decisions are still the backbone of modern detectors (YOLOv8, YOLOv9, YOLO-NAS, RT-DETR). Learn the core and every variant becomes a rearrangement of the same parts.
+YOLO（You Only Look Once，Redmon 等，2016）通过单次卷积网络前向传播完成上述所有步骤，首次让这一切实时运行；而相同的结构设计至今仍是现代检测器（YOLOv8、YOLOv9、YOLO-NAS、RT-DETR）的骨架。掌握了核心，所有变体都只是同一组模块的重新排列。
 
-## The Concept
+## 核心概念
 
-### Detection as dense prediction
+### 将检测视为密集预测
 
-A classifier outputs C numbers per image. A YOLO-style detector outputs `(S x S x (5 + C))` numbers per image, where S is the spatial grid size.
+分类器每张图像输出 C 个数字。YOLO 风格的检测器每张图像输出 `(S x S x (5 + C))` 个数字，其中 S 是空间网格尺寸。
 
 ```mermaid
 flowchart LR
@@ -44,19 +44,19 @@ flowchart LR
     style RESULT fill:#dcfce7,stroke:#16a34a
 ```
 
-Each of the `S * S` grid cells predicts `B` boxes. For each box:
+每个 `S * S` 网格单元预测 `B` 个框。对每个框而言：
 
-- 4 numbers describe geometry: `tx, ty, tw, th`.
-- 1 number is the objectness score: "is there an object centred in this cell?"
-- C numbers are class probabilities.
+- 4 个数字描述几何信息：`tx, ty, tw, th`。
+- 1 个数字是目标度分数：“是否有物体的中心落在这个单元里？”
+- C 个数字是类别概率。
 
-Total per cell: `B * (5 + C)`. For VOC with `S=13, B=2, C=20`, that is 50 numbers per cell.
+每个单元的总数为：`B * (5 + C)`。对于 VOC 数据集，若 `S=13, B=2, C=20`，则每个单元输出 50 个数字。
 
-### Why grids and anchors
+### 为什么要用网格和锚点
 
-Plain regression would predict `(x, y, w, h)` for every object as an absolute coordinate. That is hard for a conv network because translating the image should not translate all predictions by the same amount — each object is spatially anchored. The grid answers this by assigning each ground-truth box to the grid cell its centre falls in; only that cell is responsible for that object.
+直接回归会为每个目标预测绝对坐标的 `(x, y, w, h)`。这对卷积网络来说很困难，因为平移图像不应该让所有预测都平移相同的量——每个目标都有空间上的归属。网格机制解决了这一点：将每个真实框的中心所在网格单元指定为负责该目标的单元；只有该单元对这个目标负责。
 
-Anchors address a second problem. A 3x3 conv cannot easily regress a 500-pixel-wide box out of a 16-pixel receptive field feature cell. Instead, we pre-define `B` prior box shapes (anchors) per cell and predict small deltas from each anchor. The model learns to pick the right anchor and nudge it rather than regress from nothing.
+锚点解决第二个问题。一个 3x3 卷积很难从感受野只有 16 像素的特征单元回归出宽 500 像素的框。因此，我们为每个单元预先定义 `B` 个先验框形状（锚点），并预测每个锚点的小幅度偏移。模型学会选择合适的锚点并微调它，而不是从无到有地回归。
 
 ```
 Anchor box priors (example for 416x416 input):
@@ -68,11 +68,11 @@ Anchor box priors (example for 416x416 input):
 At each grid cell, every anchor emits (tx, ty, tw, th, obj, c_1, ..., c_C).
 ```
 
-Modern detectors often use FPN with different anchor sets per resolution — small anchors on shallow high-resolution maps, large anchors on deep low-resolution maps. Same idea, more scales.
+现代检测器通常会结合 FPN，在不同分辨率上使用不同的锚点集合——小锚点用于浅层高分辨率特征图，大锚点用于深层低分辨率特征图。思想相同，只是尺度更多。
 
-### Decoding predictions
+### 解码预测值
 
-The raw `tx, ty, tw, th` are not box coordinates; they are regression targets to be transformed before plotting:
+原始的 `tx, ty, tw, th` 并不是框坐标；它们是回归目标，需要在绘制前进行变换：
 
 ```
 centre x  = (sigmoid(tx) + cell_x) * stride
@@ -81,21 +81,21 @@ width     = anchor_w * exp(tw)
 height    = anchor_h * exp(th)
 ```
 
-`sigmoid` keeps centre offsets inside the cell. `exp` lets the width scale freely from the anchor without a sign flip. `stride` scales the grid coordinates back to pixels. This decode step is the same in every YOLO version since v2.
+`sigmoid` 将中心偏移限制在单元内部。`exp` 让宽度从锚点自由缩放而不会出现符号翻转。`stride` 将网格坐标还原为像素坐标。自 YOLOv2 以来，这一解码步骤在每个 YOLO 版本中都是相同的。
 
 ### IoU
 
-Detection's universal similarity metric between two boxes:
+检测领域中衡量两个框相似度的通用指标：
 
 ```
 IoU(A, B) = area(A intersect B) / area(A union B)
 ```
 
-IoU = 1 means identical; IoU = 0 means no overlap. IoU between the prediction and the ground-truth box is what decides whether a prediction counts as a true positive (typically IoU >= 0.5). IoU between two predictions is what NMS uses to deduplicate.
+IoU = 1 表示完全重合；IoU = 0 表示没有重叠。预测框与真实框之间的 IoU 决定了该预测是否算作真正例（通常 IoU >= 0.5）。两个预测框之间的 IoU 则是 NMS 用来去重的依据。
 
-### Non-maximum suppression
+### 非极大值抑制
 
-A conv network trained on adjacent anchors will often predict overlapping boxes for the same object. NMS keeps the highest-confidence prediction and deletes any other prediction with IoU above a threshold.
+在相邻锚点上训练的卷积网络经常会对同一个目标预测出重叠的框。NMS 保留置信度最高的预测，并删除任何与该预测 IoU 超过阈值的其它预测。
 
 ```
 NMS(boxes, scores, iou_threshold):
@@ -107,11 +107,11 @@ NMS(boxes, scores, iou_threshold):
     return keep
 ```
 
-Typical threshold: 0.45 for object detection. Recent detectors replace standard NMS with `soft-NMS`, `DIoU-NMS`, or learn the suppression directly (RT-DETR) but the structural purpose is the same.
+典型阈值：目标检测中常用 0.45。最近的检测器会用 `soft-NMS`、`DIoU-NMS` 或直接学习抑制过程（RT-DETR），但结构上的目的都是一样的。
 
-### The loss
+### 损失函数
 
-YOLO loss is three losses added with weights:
+YOLO 的损失是三项损失的加权和：
 
 ```
 L = lambda_coord * L_box(pred, target, where obj=1)
@@ -120,26 +120,26 @@ L = lambda_coord * L_box(pred, target, where obj=1)
   + lambda_cls   * L_cls(pred, target, where obj=1)
 ```
 
-Only cells that contain an object contribute to the box-regression and classification losses. Cells without objects contribute only to the objectness loss (teaching the model to stay silent). `lambda_noobj` is usually small (~0.5) because the vast majority of cells are empty and would otherwise dominate the total loss.
+只有包含目标的单元才对框回归损失和分类损失有贡献。没有目标的单元只对目标度损失有贡献（教会模型保持沉默）。`lambda_noobj` 通常较小（约 0.5），因为绝大多数单元都是空的，否则它们会主导总损失。
 
-Modern variants swap MSE box loss for CIoU / DIoU (which optimise IoU directly), use focal loss for class imbalance, and balance objectness with quality focal loss. The three-component structure is unchanged.
+现代变体将 MSE 框损失替换为 CIoU / DIoU（直接优化 IoU），对类别不平衡使用 focal loss，并用 quality focal loss 平衡目标度。但三模块结构始终未变。
 
-### Detection metrics
+### 检测指标
 
-Accuracy does not transfer to detection. Four numbers that do:
+准确率不适用于检测。以下四个指标才适用：
 
-- **Precision@IoU=0.5** — of the predictions counted as positives, how many are actually correct.
-- **Recall@IoU=0.5** — of the real objects, how many did we find.
-- **AP@0.5** — precision-recall curve area at IoU threshold 0.5; one number per class.
-- **mAP@0.5:0.95** — average of AP over IoU thresholds 0.5, 0.55, ..., 0.95. The COCO metric; strictest and most informative.
+- **Precision@IoU=0.5**——在被计为正的预测中，有多少是真正正确的。
+- **Recall@IoU=0.5**——在所有真实目标中，有多少被找到了。
+- **AP@0.5**——在 IoU 阈值 0.5 下的精确率-召回率曲线下面积；每个类别一个数值。
+- **mAP@0.5:0.95**——在 IoU 阈值 0.5、0.55、…、0.95 上 AP 的平均值。COCO 标准指标；最严格也最具信息量。
 
-Report all four. A detector that is strong on mAP@0.5 but weak on mAP@0.5:0.95 is localising roughly but not tightly; fix with better box-regression loss. A detector with high precision and low recall is too conservative; lower the confidence threshold or increase the objectness weight.
+四个都要报告。一个在 mAP@0.5 上很强但 mAP@0.5:0.95 上很弱的检测器，说明大致定位到了但框不够紧；应改进框回归损失。一个精确率高但召回率低的检测器则过于保守；应降低置信度阈值或增加目标度权重。
 
-## Build It
+## 动手实现
 
-### Step 1: IoU
+### 第 1 步：IoU
 
-The workhorse of the whole lesson. Works on two arrays of boxes in `(x1, y1, x2, y2)` format.
+这是整节课的劳模函数。接收两组 `(x1, y1, x2, y2)` 格式的框数组。
 
 ```python
 import numpy as np
@@ -163,9 +163,9 @@ def box_iou(boxes_a, boxes_b):
     return inter / np.clip(union, 1e-8, None)
 ```
 
-Returns an `(N_a, N_b)` matrix of pairwise IoUs. Use it against a single ground-truth box by making one of the arrays shape `(1, 4)`.
+返回形状为 `(N_a, N_b)` 的成对 IoU 矩阵。针对单个真实框使用时，可将其中一个数组设为形状 `(1, 4)`。
 
-### Step 2: Non-max suppression
+### 第 2 步：非极大值抑制
 
 ```python
 def nms(boxes, scores, iou_threshold=0.45):
@@ -182,11 +182,11 @@ def nms(boxes, scores, iou_threshold=0.45):
     return np.array(keep, dtype=np.int64)
 ```
 
-Deterministic, `O(N log N)` from the sort, and matches the behaviour of `torchvision.ops.nms` on identical inputs.
+确定性算法，由于排序而为 `O(N log N)`，在相同输入下与 `torchvision.ops.nms` 行为一致。
 
-### Step 3: Box encoding and decoding
+### 第 3 步：框编码与解码
 
-Convert between pixel coordinates and the `(tx, ty, tw, th)` targets that the network actually regresses.
+在像素坐标和网络实际回归的 `(tx, ty, tw, th)` 目标之间进行转换。
 
 ```python
 def encode(box_xyxy, cell_x, cell_y, stride, anchor_wh):
@@ -215,11 +215,11 @@ def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 ```
 
-Test: encode a box then decode — you should get back something very close to the original (up to the sigmoid inverse not being perfectly invertible when `tx` is not in the post-sigmoid range).
+测试：先编码一个框再解码——你应该能得到非常接近原框的结果（由于 sigmoid 逆函数在 `tx` 不在 post-sigmoid 范围内时并非完全可逆，会有一点误差）。
 
-### Step 4: A minimal YOLO head
+### 第 4 步：最简 YOLO 检测头
 
-One 1x1 conv on a feature map, reshaping to `(B, S, S, num_anchors, 5 + C)`.
+在特征图上做一个 1x1 卷积，然后 reshape 成 `(B, S, S, num_anchors, 5 + C)`。
 
 ```python
 import torch
@@ -240,11 +240,11 @@ class YOLOHead(nn.Module):
         return y
 ```
 
-Output shape: `(N, H, W, num_anchors, 5 + C)`. The last dimension holds `[tx, ty, tw, th, obj, cls_0, ..., cls_{C-1}]`.
+输出形状：`(N, H, W, num_anchors, 5 + C)`。最后一个维度保存 `[tx, ty, tw, th, obj, cls_0, ..., cls_{C-1}]`。
 
-### Step 5: Ground-truth assignment
+### 第 5 步：真实目标分配
 
-For every ground-truth box, decide which `(cell, anchor)` is responsible.
+对每个真实框，决定由哪个 `(cell, anchor)` 负责。
 
 ```python
 def assign_targets(boxes_xyxy, classes, anchors, stride, grid_size, num_classes):
@@ -275,9 +275,9 @@ def assign_targets(boxes_xyxy, classes, anchors, stride, grid_size, num_classes)
     return target, has_obj
 ```
 
-Anchor selection is "best shape IoU with the ground truth" — a cheap proxy that matches the YOLOv2/v3 assignment. v5 and later use more sophisticated strategies (task-aligned matching, dynamic k) that refine the same idea.
+锚点选择采用“与真实框形状 IoU 最高”的廉价代理，与 YOLOv2/v3 的分配方式一致。v5 及以后使用更复杂的策略（task-aligned matching、dynamic k），但都是对同一思想的细化。
 
-### Step 6: The three losses
+### 第 6 步：三项损失
 
 ```python
 def yolo_loss(pred, target, has_obj, lambda_coord=5.0, lambda_obj=1.0, lambda_noobj=0.5, lambda_cls=1.0):
@@ -311,11 +311,11 @@ def yolo_loss(pred, target, has_obj, lambda_coord=5.0, lambda_obj=1.0, lambda_no
                    "obj_neg": loss_obj_neg.item(), "cls": loss_cls.item()}
 ```
 
-Five hyper-parameters that every YOLO tutorial either hardcodes or sweeps. The ratios matter: `lambda_coord=5, lambda_noobj=0.5` mirrors the original YOLOv1 paper and still works as a reasonable default.
+五个超参数，每个 YOLO 教程要么硬编码、要么 sweep。比例才是关键：`lambda_coord=5, lambda_noobj=0.5` 复现了原始 YOLOv1 论文，至今仍是合理的默认值。
 
-### Step 7: Inference pipeline
+### 第 7 步：推理流水线
 
-Decode the raw head output, apply sigmoid/exp, threshold on objectness, and NMS.
+解码原始检测头输出，应用 sigmoid/exp，按目标度阈值过滤，然后做 NMS。
 
 ```python
 def postprocess(pred_tensor, anchors, stride, img_size, conf_threshold=0.25, iou_threshold=0.45):
@@ -349,11 +349,11 @@ def postprocess(pred_tensor, anchors, stride, img_size, conf_threshold=0.25, iou
     return boxes[keep], scores[keep], classes[keep]
 ```
 
-That is the complete eval path: head -> decode -> threshold -> NMS.
+这就是完整的评估路径：检测头 -> 解码 -> 阈值过滤 -> NMS。
 
-## Use It
+## 使用现成的方案
 
-`torchvision.models.detection` ships production detectors with the same conceptual structure. Loading a pretrained model takes three lines.
+`torchvision.models.detection` 提供了具有相同概念结构的生产级检测器。加载预训练模型只需三行。
 
 ```python
 import torch
@@ -369,37 +369,37 @@ print(f"scores: {predictions[0]['scores'].shape}")
 print(f"labels: {predictions[0]['labels'].shape}")
 ```
 
-For real-time inference pipelines, `ultralytics` (YOLOv8/v9) is the standard: `from ultralytics import YOLO; model = YOLO('yolov8n.pt'); model(img)`. The model handles decoding and NMS internally and returns the same `boxes / scores / labels` triple you built above.
+对于实时推理流水线，`ultralytics`（YOLOv8/v9）是标准选择：`from ultralytics import YOLO; model = YOLO('yolov8n.pt'); model(img)`。模型会在内部完成解码和 NMS，并返回与你自己上面实现的相同的 `boxes / scores / labels` 三元组。
 
-## Ship It
+## 产出物
 
-This lesson produces:
+本节课产出：
 
-- `outputs/prompt-detection-metric-reader.md` — a prompt that turns a `precision, recall, AP, mAP@0.5:0.95` row into a one-line diagnosis and the single most useful next experiment.
-- `outputs/skill-anchor-designer.md` — a skill that, given a dataset of ground-truth boxes, runs k-means on `(w, h)` and returns anchor sets per FPN level plus the coverage statistics you need to pick the right number of anchors.
+- `outputs/prompt-detection-metric-reader.md`——一个 prompt，将 `precision, recall, AP, mAP@0.5:0.95` 行转化为一行诊断和下一步最有用的单个实验。
+- `outputs/skill-anchor-designer.md`——一个 skill，给定一组真实框的数据集，对 `(w, h)` 运行 k-means，按 FPN 层级返回锚点集合以及选择合适锚点数量所需的覆盖统计信息。
 
-## Exercises
+## 练习
 
-1. **(Easy)** Implement `box_iou` and run it against `torchvision.ops.box_iou` on 1,000 random box pairs. Verify max absolute difference is below `1e-6`.
-2. **(Medium)** Port `yolo_loss` to a version that uses `CIoU` box loss instead of MSE. Show on a 100-image synthetic dataset that CIoU converges to a better final mAP@0.5:0.95 than MSE in the same number of epochs.
-3. **(Hard)** Implement multi-scale inference: feed the same image at three resolutions through the model, union the box predictions, and run a single NMS at the end. Measure the mAP lift vs single-scale inference on a held-out set.
+1. **（简单）** 实现 `box_iou`，并在 1,000 对随机框上与 `torchvision.ops.box_iou` 对比运行。验证最大绝对差低于 `1e-6`。
+2. **（中等）** 将 `yolo_loss` 改为使用 `CIoU` 框损失的版本。在一个 100 张图像的合成数据集上证明，在相同 epoch 数下 CIoU 比 MSE 收敛到更高的最终 mAP@0.5:0.95。
+3. **（困难）** 实现多尺度推理：将同一张图像以三种不同分辨率输入模型，合并框预测，最后运行一次 NMS。在留出集上测量相比单尺度推理的 mAP 提升。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|----------------|----------------------|
-| Anchor | "Box prior" | A pre-defined box shape at each grid cell from which the network predicts deltas instead of absolute coordinates |
-| IoU | "Overlap" | Intersection-over-union of two boxes; the universal similarity measure in detection |
-| NMS | "Deduplicate" | Greedy algorithm that keeps highest-score predictions and removes overlapping ones above a threshold |
-| Objectness | "Is there something here" | Per-anchor, per-cell scalar predicting whether an object is centred in that cell |
-| Grid stride | "Downsample factor" | Pixels per grid cell; a 416-px input with a 13-grid head has stride 32 |
-| mAP | "Mean average precision" | Average of the area under the precision-recall curve, averaged over classes and (for COCO) IoU thresholds |
-| AP@0.5 | "PASCAL VOC AP" | Average precision with IoU threshold 0.5; the lenient version of the metric |
-| mAP@0.5:0.95 | "COCO AP" | Average over IoU thresholds 0.5..0.95 step 0.05; the strict version and current community standard |
+| 术语 | 人们的说法 | 实际含义 |
+|------|------------|----------|
+| Anchor | “框先验” | 每个网格单元上预定义的框形状，网络从它预测偏移量而不是绝对坐标 |
+| IoU | “重叠” | 两个框的交并比；检测中的通用相似度度量 |
+| NMS | “去重” | 贪心算法，保留置信度最高的预测并删除超过阈值的重叠预测 |
+| Objectness | “这里有没有东西” | 每个锚点、每个单元上的标量，预测该单元中心是否有物体 |
+| Grid stride | “下采样因子” | 每个网格单元对应的像素数；416 像素输入、13 网格检测头的 stride 为 32 |
+| mAP | “平均精度均值” | 精确率-召回率曲线下面积，按类别平均；在 COCO 中还要按 IoU 阈值平均 |
+| AP@0.5 | “PASCAL VOC AP” | IoU 阈值为 0.5 的平均精度；该指标的宽松版本 |
+| mAP@0.5:0.95 | “COCO AP” | 在 IoU 阈值 0.5 到 0.95、步长 0.05 上取平均；严格版本，也是当前社区标准 |
 
-## Further Reading
+## 延伸阅读
 
-- [YOLOv1: You Only Look Once (Redmon et al., 2016)](https://arxiv.org/abs/1506.02640) — the founding paper; every YOLO since is a refinement of this structure
-- [YOLOv3 (Redmon & Farhadi, 2018)](https://arxiv.org/abs/1804.02767) — the paper that introduced multi-scale FPN-style heads; still the clearest diagram
-- [Ultralytics YOLOv8 docs](https://docs.ultralytics.com) — the current production reference; covers dataset formats, augmentations, training recipes
-- [The Illustrated Guide to Object Detection (Jonathan Hui)](https://jonathan-hui.medium.com/object-detection-series-24d03a12f904) — best plain-English tour of the full detector zoo; priceless for understanding how DETR, RetinaNet, FCOS, and YOLO relate
+- [YOLOv1: You Only Look Once (Redmon et al., 2016)](https://arxiv.org/abs/1506.02640)——奠基论文；此后每个 YOLO 都是对这一结构的精细化
+- [YOLOv3 (Redmon & Farhadi, 2018)](https://arxiv.org/abs/1804.02767)——引入多尺度 FPN 风格检测头的论文；图示至今最清晰
+- [Ultralytics YOLOv8 docs](https://docs.ultralytics.com)——当前生产环境参考实现；涵盖数据集格式、数据增强、训练配方
+- [The Illustrated Guide to Object Detection (Jonathan Hui)](https://jonathan-hui.medium.com/object-detection-series-24d03a12f904)——对完整检测器家族最清晰易懂的英文导览；对理解 DETR、RetinaNet、FCOS 和 YOLO 之间的关系极有价值

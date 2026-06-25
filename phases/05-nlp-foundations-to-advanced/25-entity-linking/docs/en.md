@@ -1,53 +1,53 @@
-# Entity Linking & Disambiguation
+# 实体链接与消歧
 
-> NER found "Paris." Entity linking decides: Paris, France? Paris Hilton? Paris, Texas? Paris (the Trojan prince)? Without linking, your knowledge graph stays ambiguous.
+> NER 识别出了 "Paris"。实体链接要判断：Paris, France？Paris Hilton？Paris, Texas？Paris（特洛伊王子）？没有链接，你的知识图谱将始终充满歧义。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 5 · 06 (NER), Phase 5 · 24 (Coreference Resolution)
-**Time:** ~60 minutes
+**类型：** Build
+**语言：** Python
+**前置知识：** Phase 5 · 06（NER），Phase 5 · 24（Coreference Resolution）
+**时间：** ~60 分钟
 
-## The Problem
+## 问题背景
 
-A sentence reads: "Jordan beat the press." Your NER tags "Jordan" as PERSON. Good. But *which* Jordan?
+句子写道："Jordan beat the press." 你的 NER 把 "Jordan" 标注为 PERSON，很好。但*是哪一个* Jordan？
 
-- Michael Jordan (basketball)?
-- Michael B. Jordan (actor)?
-- Michael I. Jordan (Berkeley ML professor — yes, this confusion is real in ML papers)?
-- Jordan (the country)?
-- Jordan (Hebrew first name)?
+- Michael Jordan（篮球运动员）？
+- Michael B. Jordan（演员）？
+- Michael I. Jordan（伯克利机器学习教授——在 ML 论文里这种混淆真实存在）？
+- Jordan（国家）？
+- Jordan（希伯来语名字）？
 
-Entity linking (EL) resolves each mention to a unique entry in a knowledge base: Wikidata, Wikipedia, DBpedia, or your domain KB. Two subtasks:
+实体链接（EL）将每个提及解析为知识库中的唯一条目：Wikidata、Wikipedia、DBpedia 或你的领域 KB。它包含两个子任务：
 
-1. **Candidate generation.** Given "Jordan," which KB entries are plausible?
-2. **Disambiguation.** Given the context, which candidate is the right one?
+1. **候选生成。** 给定 "Jordan"，哪些 KB 条目是合理的？
+2. **消歧。** 给定上下文，哪个候选是正确的？
 
-Both steps are learnable. Both are benchmarked. The combined pipeline has been stable for a decade — what changes is the quality of the disambiguator.
+两个步骤都可以学习，也都有基准测试。组合 pipeline 已经稳定运行了十年——变化的是消歧器的质量。
 
-## The Concept
+## 核心概念
 
-![Entity linking pipeline: mention → candidates → disambiguated entity](../assets/entity-linking.svg)
+![实体链接 pipeline：mention → candidates → disambiguated entity](../assets/entity-linking.svg)
 
-**Candidate generation.** Given the mention surface form ("Jordan"), look up candidates in an alias index. Wikipedia alias dictionaries cover most named entities: "JFK" → John F. Kennedy, Jacqueline Kennedy, JFK airport, JFK (movie). Typical index returns 10-30 candidates per mention.
+**候选生成。** 给定提及的表面形式（"Jordan"），在别名索引中查找候选。Wikipedia 别名字典覆盖了大多数命名实体："JFK" → John F. Kennedy、Jacqueline Kennedy、JFK 机场、JFK（电影）。典型索引每个 mention 返回 10–30 个候选。
 
-**Disambiguation: three approaches.**
+**消歧：三种方法。**
 
-1. **Prior + context (Milne & Witten, 2008).** `P(entity | mention) × context-similarity(entity, text)`. Works well, fast, no training.
-2. **Embedding-based (ESS / REL / Blink).** Encode mention + context. Encode each candidate's description. Pick max cosine. The 2020-2024 default.
-3. **Generative (GENRE, 2021; LLM-based, 2023+).** Decode the entity's canonical name token-by-token. Constrained to a trie of valid entity names so output is guaranteed to be a valid KB id.
+1. **先验 + 上下文（Milne & Witten, 2008）。** `P(entity | mention) × context-similarity(entity, text)`。效果好、速度快、无需训练。
+2. **基于嵌入（ESS / REL / BLINK）。** 编码 mention + 上下文；编码每个候选的描述；选择余弦相似度最大者。2020–2024 年的默认方案。
+3. **生成式（GENRE, 2021；基于 LLM, 2023+）。** 逐 token 解码实体的规范名称。通过 trie 约束，保证输出一定是有效的 KB id。
 
-**End-to-end vs pipeline.** Modern models (ELQ, BLINK, ExtEnD, GENRE) run NER + candidate generation + disambiguation in one pass. Pipeline systems still dominate in production because you can swap components.
+**端到端 vs 流水线。** 现代模型（ELQ、BLINK、ExtEnD、GENRE）在一个前向过程中完成 NER + 候选生成 + 消歧。流水线系统仍主导生产环境，因为你可以单独替换组件。
 
-### The two measurements
+### 两项评估指标
 
-- **Mention recall (candidate gen).** Fraction of gold mentions where the correct KB entry appears in the candidate list. Floor for the whole pipeline.
-- **Disambiguation accuracy / F1.** Given correct candidates, how often the top-1 is right.
+- **提及召回（候选生成）。** 正确 KB 条目出现在候选列表中的黄金提及比例。这是整个 pipeline 的下限。
+- **消歧准确率 / F1。** 在正确候选存在的前提下，top-1 选对的频率。
 
-Always report both. A system with 99% disambiguation on 80% candidate recall is an 80% pipeline.
+两个都要报告。一个在 80% 候选召回上达到 99% 消歧的系统，实际只是 80% 的 pipeline。
 
-## Build It
+## 动手实现
 
-### Step 1: build an alias index from Wikipedia redirects
+### 步骤 1：从 Wikipedia 重定向构建别名索引
 
 ```python
 alias_to_entities = {
@@ -57,9 +57,9 @@ alias_to_entities = {
 }
 ```
 
-Wikipedia alias data: ~18M (alias, entity) pairs. Download from Wikidata dumps. Store as inverted index.
+Wikipedia 别名数据：约 1800 万（alias, entity）对。从 Wikidata dump 下载，存储为倒排索引。
 
-### Step 2: context-based disambiguation
+### 步骤 2：基于上下文的消歧
 
 ```python
 def disambiguate(mention, context, alias_index, entity_desc):
@@ -77,9 +77,9 @@ def disambiguate(mention, context, alias_index, entity_desc):
     return best, best_score
 ```
 
-The Jaccard overlap is a toy. Replace with cosine similarity on embeddings (see `code/main.py` step-2 for the transformer version).
+Jaccard 重叠只是一个 toy 示例。请替换为基于嵌入的余弦相似度（参见 `code/main.py` 中的 step-2 transformer 版本）。
 
-### Step 3: embedding-based (BLINK-style)
+### 步骤 3：基于嵌入的方法（BLINK 风格）
 
 ```python
 from sentence_transformers import SentenceTransformer
@@ -94,11 +94,11 @@ def embed_entity(entity_id, description):
     return encoder.encode([f"{entity_id}: {description}"], normalize_embeddings=True)[0]
 ```
 
-At index time, embed every KB entity once. At query time, embed the mention + context once, dot-product against the candidate pool, pick max.
+在索引阶段，每个 KB 实体只编码一次；在查询阶段，对 mention + 上下文编码一次，与候选池做点积，选择最大值。
 
-### Step 4: generative entity linking (concept)
+### 步骤 4：生成式实体链接（概念）
 
-GENRE decodes the entity's Wikipedia title character-by-character. Constrained decoding (see lesson 20) ensures only valid titles can be output. Tight integration with a KB-backed trie. The modern descendant is REL-GEN and LLM-prompted EL with structured output.
+GENRE 逐字符解码实体的 Wikipedia 标题。约束解码（参见第 20 课）确保只输出有效标题。它与基于 KB 的 trie 紧密结合。现代后继包括 REL-GEN 以及使用结构化输出的 LLM 提示式 EL。
 
 ```python
 prompt = f"""Text: {text}
@@ -107,82 +107,82 @@ List the best Wikipedia title for this mention.
 Respond with JSON: {{"title": "..."}}"""
 ```
 
-Combined with a whitelist (Outlines `choice`), this is the simplest EL pipeline to ship in 2026.
+结合白名单（Outlines `choice`），这是 2026 年最容易落地的 EL pipeline。
 
-### Step 5: evaluate on AIDA-CoNLL
+### 步骤 5：在 AIDA-CoNLL 上评估
 
-AIDA-CoNLL is the standard EL benchmark: 1,393 Reuters articles, 34k mentions, Wikipedia entities. Report in-KB accuracy (`P@1`) and out-of-KB NIL-detection rate.
+AIDA-CoNLL 是标准的 EL 基准：1,393 篇 Reuters 文章，34k 个提及，Wikipedia 实体。报告 in-KB 准确率（`P@1`）和 out-of-KB 的 NIL 检测率。
 
-## Pitfalls
+## 常见陷阱
 
-- **NIL handling.** Some mentions are not in the KB (emerging entities, obscure people). Systems must predict NIL instead of guessing the wrong entity. Measured separately.
-- **Mention boundary errors.** Upstream NER misses partial spans ("Bank of America" tagged as just "Bank"). EL recall drops.
-- **Popularity bias.** Trained systems over-predict frequent entities. A mention of "Michael I. Jordan" on an ML paper often links to basketball Jordan.
-- **Cross-lingual EL.** Mapping mentions in Chinese text to English Wikipedia entities. Requires a multilingual encoder or a translation step.
-- **KB staleness.** New companies, events, people are not in last year's Wikipedia dump. Production pipelines need a refresh loop.
+- **NIL 处理。** 有些提及不在 KB 中（新兴实体、冷门人物）。系统必须预测 NIL，而不是胡乱猜一个错误实体。需单独评估。
+- **提及边界错误。** 上游 NER 漏掉部分跨度（如把 "Bank of America" 只标成 "Bank"）会导致 EL 召回下降。
+- **流行度偏差。** 训练后的系统倾向于预测高频实体。在 ML 论文中提到 "Michael I. Jordan" 时，常被链接到篮球 Jordan。
+- **跨语言 EL。** 将中文文本中的提及映射到英文 Wikipedia 实体。需要多语言编码器或翻译步骤。
+- **KB 过时。** 新公司、事件、人物不会出现在去年的 Wikipedia dump 中。生产 pipeline 需要刷新机制。
 
-## Use It
+## 如何使用
 
-The 2026 stack:
+2026 年的技术栈：
 
-| Situation | Pick |
+| 场景 | 推荐方案 |
 |-----------|------|
-| General-purpose English + Wikipedia | BLINK or REL |
-| Cross-lingual, KB = Wikipedia | mGENRE |
-| LLM-friendly, few mentions/day | Prompt Claude/GPT-4 with candidate list + constrained JSON |
-| Domain-specific KB (medical, legal) | Custom BERT with KB-aware retrieval + fine-tune on domain AIDA-style set |
-| Extremely low-latency | Exact-match prior only (Milne-Witten baseline) |
-| Research SOTA | GENRE / ExtEnD / generative LLM-EL |
+| 通用英文 + Wikipedia | BLINK 或 REL |
+| 跨语言，KB = Wikipedia | mGENRE |
+| LLM 友好，提及量小 | 用候选列表 + 约束 JSON 提示 Claude/GPT-4 |
+| 领域 KB（医学、法律） | 自定义 BERT + KB 感知检索，在领域 AIDA 风格数据集上微调 |
+| 极低延迟 | 仅使用精确匹配先验（Milne-Witten 基线） |
+| 研究 SOTA | GENRE / ExtEnD / 生成式 LLM-EL |
 
-Production pattern that ships in 2026: NER → coref → EL on each mention → collapse clusters to one canonical entity per cluster. Output: one KB id per entity in the document, not one per mention.
+2026 年可落地的生产模式：NER → 共指消解 → 对每个提及做 EL → 将聚类 collapsed 为每个聚类一个规范实体。输出：文档中每个实体一个 KB id，而不是每个提及一个。
 
-## Ship It
+## 交付物
 
-Save as `outputs/skill-entity-linker.md`:
+保存为 `outputs/skill-entity-linker.md`：
 
 ```markdown
 ---
 name: entity-linker
-description: Design an entity linking pipeline — KB, candidate generator, disambiguator, evaluation.
+description: 设计一个实体链接 pipeline——KB、候选生成器、消歧器、评估。
 version: 1.0.0
 phase: 5
 lesson: 25
 tags: [nlp, entity-linking, knowledge-graph]
 ---
 
-Given a use case (domain KB, language, volume, latency budget), output:
+给定一个用例（领域 KB、语言、规模、延迟预算），输出：
 
-1. Knowledge base. Wikidata / Wikipedia / custom KB. Version date. Refresh cadence.
-2. Candidate generator. Alias-index, embedding, or hybrid. Target mention recall @ K.
-3. Disambiguator. Prior + context, embedding-based, generative, or LLM-prompted.
-4. NIL strategy. Threshold on top score, classifier, or explicit NIL candidate.
-5. Evaluation. Mention recall @ 30, top-1 accuracy, NIL-detection F1 on held-out set.
+1. Knowledge base。Wikidata / Wikipedia / 自定义 KB。版本日期。刷新周期。
+2. Candidate generator。别名索引、嵌入或混合。目标 mention recall @ K。
+3. Disambiguator。先验 + 上下文、基于嵌入、生成式或 LLM 提示。
+4. NIL strategy。对 top score 设阈值、分类器或显式 NIL 候选。
+5. Evaluation。Mention recall @ 30、top-1 准确率、NIL 检测 F1 在留出集上。
 
-Refuse any EL pipeline without a mention-recall baseline (you cannot evaluate a disambiguator without knowing candidate gen surfaced the right entity). Refuse any pipeline using LLM-prompted EL without constrained output to valid KB ids. Flag systems where popularity bias affects minority entities (e.g. name-clashes) without domain fine-tuning.
+拒绝任何没有 mention-recall 基线的 EL pipeline（如果候选生成没有把正确实体放进列表，你就无法评估消歧器）。拒绝任何未将输出约束为有效 KB id 的 LLM 提示式 EL pipeline。标记那些因流行度偏差而影响少数实体（例如同名冲突）且未做领域微调的系统。
 ```
 
-## Exercises
+## 练习
 
-1. **Easy.** Implement the prior+context disambiguator in `code/main.py` on 10 ambiguous mentions (Paris, Jordan, Apple). Hand-label the correct entity. Measure accuracy.
-2. **Medium.** Encode 50 ambiguous mentions with a sentence transformer. Embed each candidate's description. Compare embedding-based disambiguation to Jaccard context overlap.
-3. **Hard.** Build a 1k-entity domain KB (e.g. employees + products in your company). Implement NER + EL end-to-end. Measure precision and recall on 100 held-out sentences.
+1. **简单。** 在 `code/main.py` 中为 10 个有歧义的提及（Paris、Jordan、Apple）实现先验 + 上下文消歧器。手工标注正确实体并测量准确率。
+2. **中等。** 用 sentence transformer 编码 50 个有歧义的提及，并为每个候选的描述生成嵌入。比较基于嵌入的消歧与 Jaccard 上下文重叠。
+3. **困难。** 构建一个包含 1k 实体的领域 KB（例如公司里的员工 + 产品）。实现端到端 NER + EL，在 100 句留出句子上测量精确率和召回率。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
+| 术语 | 人们常说 | 实际含义 |
 |------|-----------------|-----------------------|
-| Entity linking (EL) | Link to Wikipedia | Map a mention to a unique KB entry. |
-| Candidate generation | Who could it be? | Return a shortlist of plausible KB entries for a mention. |
-| Disambiguation | Pick the right one | Score candidates using context, pick the winner. |
-| Alias index | The lookup table | Map from surface form → candidate entities. |
-| NIL | Not in KB | Explicit prediction that no KB entry matches. |
-| KB | Knowledge base | Wikidata, Wikipedia, DBpedia, or your domain KB. |
-| AIDA-CoNLL | The benchmark | 1,393 Reuters articles with gold entity links. |
+| Entity linking (EL) | 链接到 Wikipedia | 将一个提及映射到唯一的 KB 条目。 |
+| Candidate generation | 可能是谁？ | 返回提及对应的合理 KB 条目短名单。 |
+| Disambiguation | 选对那个 | 利用上下文给候选打分并选出胜者。 |
+| Alias index | 查找表 | 从表面形式 → 候选实体的映射。 |
+| NIL | 不在 KB 中 | 显式预测没有 KB 条目匹配。 |
+| KB | 知识库 | Wikidata、Wikipedia、DBpedia 或你的领域 KB。 |
+| AIDA-CoNLL | 基准 | 1,393 篇带 gold 实体链接的 Reuters 文章。 |
 
-## Further Reading
+## 延伸阅读
 
-- [Milne, Witten (2008). Learning to Link with Wikipedia](https://www.cs.waikato.ac.nz/~ihw/papers/08-DM-IHW-LearningToLinkWithWikipedia.pdf) — the foundational prior+context approach.
-- [Wu et al. (2020). Zero-shot Entity Linking with Dense Entity Retrieval (BLINK)](https://arxiv.org/abs/1911.03814) — the embedding-based workhorse.
-- [De Cao et al. (2021). Autoregressive Entity Retrieval (GENRE)](https://arxiv.org/abs/2010.00904) — generative EL with constrained decoding.
-- [Hoffart et al. (2011). Robust Disambiguation of Named Entities in Text (AIDA)](https://www.aclweb.org/anthology/D11-1072.pdf) — the benchmark paper.
-- [REL: An Entity Linker Standing on the Shoulders of Giants (2020)](https://arxiv.org/abs/2006.01969) — the open production stack.
+- [Milne, Witten (2008). Learning to Link with Wikipedia](https://www.cs.waikato.ac.nz/~ihw/papers/08-DM-IHW-LearningToLinkWithWikipedia.pdf) —— 基础性的先验 + 上下文方法。
+- [Wu et al. (2020). Zero-shot Entity Linking with Dense Entity Retrieval (BLINK)](https://arxiv.org/abs/1911.03814) —— 基于嵌入的主力方法。
+- [De Cao et al. (2021). Autoregressive Entity Retrieval (GENRE)](https://arxiv.org/abs/2010.00904) —— 带约束解码的生成式 EL。
+- [Hoffart et al. (2011). Robust Disambiguation of Named Entities in Text (AIDA)](https://www.aclweb.org/anthology/D11-1072.pdf) —— 基准论文。
+- [REL: An Entity Linker Standing on the Shoulders of Giants (2020)](https://arxiv.org/abs/2006.01969) —— 开源生产级 stack。

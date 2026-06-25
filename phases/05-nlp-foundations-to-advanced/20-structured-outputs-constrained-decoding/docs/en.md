@@ -1,62 +1,62 @@
-# Structured Outputs & Constrained Decoding
+# 结构化输出与约束解码
 
-> Ask an LLM for JSON. Get JSON most of the time. In production, "most" is the problem. Constrained decoding turns "most" into "always" by editing the logits before sampling.
+> 让 LLM 输出 JSON。大多数时候你能得到 JSON。但在生产环境中，“大多数时候”就是问题所在。约束解码通过在采样前修改 logits，把“大多数时候”变成“总是”。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 5 · 17 (Chatbots), Phase 5 · 19 (Subword Tokenization)
-**Time:** ~60 minutes
+**类型：** 构建
+**语言：** Python
+**前置知识：** 第 5 阶段 · 第 17 课（聊天机器人），第 5 阶段 · 第 19 课（子词分词）
+**时长：** 约 60 分钟
 
-## The Problem
+## 问题所在
 
-A classifier prompts an LLM: "Return one of {positive, negative, neutral}." The model returns "The sentiment is positive — this review is overwhelmingly favorable because the customer explicitly states that they ...". Your parser crashes. Your classifier's F1 is 0.0.
+一个分类器向 LLM 提问：“返回 {positive, negative, neutral} 中的一个。”模型却返回：“The sentiment is positive — this review is overwhelmingly favorable because the customer explicitly states that they ...”。你的解析器崩溃了，分类器的 F1 变成 0.0。
 
-Free-form generation is not a contract. It is a suggestion. A production system needs a contract.
+自由格式生成不是契约，只是建议。生产系统需要契约。
 
-Three layers exist in 2026.
+2026 年存在三个层级。
 
-1. **Prompting.** Ask nicely. "Return only the JSON object." Works ~80% on frontier models, less on smaller ones.
-2. **Native structured output APIs.** OpenAI `response_format`, Anthropic tool use, Gemini JSON mode. Reliable on supported schemas. Vendor-locked.
-3. **Constrained decoding.** Modify the logits at every generation step so the model *cannot* emit invalid tokens. 100% valid by construction. Works on any local model.
+1. **提示工程。** 礼貌地要求。"Return only the JSON object." 在前沿模型上大约 80% 有效，在更小的模型上效果更差。
+2. **原生结构化输出 API。** OpenAI 的 `response_format`、Anthropic 的 tool use、Gemini 的 JSON mode。在支持的 schema 上可靠，但会绑定厂商。
+3. **约束解码。** 在每一步生成时修改 logits，让模型*无法*输出无效 token。按构造保证 100% 有效，适用于任何本地模型。
 
-This lesson builds intuition for all three and names when to reach for which.
+本课建立对三者的直觉，并说明何时选择哪一种。
 
-## The Concept
+## 核心概念
 
-![Constrained decoding masking invalid tokens at each step](../assets/constrained-decoding.svg)
+![约束解码在每一步屏蔽无效 token](../assets/constrained-decoding.svg)
 
-**How constrained decoding works.** At each generation step, the LLM produces a logit vector over the full vocabulary (~100k tokens). A *logit processor* sits between the model and the sampler. It computes which tokens are valid given the current position in the target grammar — JSON Schema, regex, context-free grammar — and sets the logits of all invalid tokens to negative infinity. The softmax over the remaining logits puts probability mass only on valid continuations.
+**约束解码的工作原理。** 在每一步生成中，LLM 会输出覆盖整个词表（约 10 万 token）的 logit 向量。一个 *logit processor* 位于模型与采样器之间，根据当前在目标语法（JSON Schema、正则表达式、上下文无关语法）中的位置，计算哪些 token 是合法的，并将所有非法 token 的 logit 设为负无穷。对剩余 logit 做 softmax 后，概率质量只落在合法的续接 token 上。
 
-Implementations in 2026:
+2026 年的实现：
 
-- **Outlines.** Compiles JSON Schema or regex into a finite-state machine. Every token gets an O(1) valid-next-token lookup. FSM-based, so recursive schemas need flattening.
-- **XGrammar / llguidance.** Context-free grammar engines. Handle recursive JSON Schema. Near-zero decoding overhead. OpenAI credited llguidance in their 2025 structured output implementation.
-- **vLLM guided decoding.** Built-in `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar` via Outlines, XGrammar, or lm-format-enforcer backends.
-- **Instructor.** Pydantic-based wrapper over any LLM. Retries on validation failure. Cross-provider, but does not modify logits — it relies on retries + structured-output-aware prompts.
+- **Outlines。** 将 JSON Schema 或正则表达式编译成有限状态机。每个 token 都能以 O(1) 时间查询合法的下一个 token。基于 FSM，因此递归 schema 需要展平。
+- **XGrammar / llguidance。** 上下文无关语法引擎。能处理递归 JSON Schema。解码开销接近零。OpenAI 在 2025 年的结构化输出实现中致谢了 llguidance。
+- **vLLM guided decoding。** 内置 `guided_json`、`guided_regex`、`guided_choice`、`guided_grammar`，后端可选 Outlines、XGrammar 或 lm-format-enforcer。
+- **Instructor。** 基于 Pydantic 的 LLM 封装。验证失败时自动重试。跨厂商，但不修改 logits —— 它依赖重试与结构化输出感知提示。
 
-### The counterintuitive result
+### 反直觉的结果
 
-Constrained decoding is often *faster* than unconstrained generation. Two reasons. First, it shrinks the next-token search space. Second, clever implementations skip token generation entirely for forced tokens (scaffolding like `{"name": "` — every byte is determined).
+约束解码通常比无约束生成*更快*。两个原因。首先，它缩小了下一个 token 的搜索空间。其次，巧妙的实现会跳过强制 token 的生成（脚手架部分如 `{"name": "` —— 每个字节都是确定的）。
 
-### The pitfall that costs you
+### 让你付出代价的陷阱
 
-Field order matters. Put `answer` before `reasoning`, and the model commits to an answer before it thinks. JSON is valid. Answer is wrong. No validation catches it.
+字段顺序很重要。把 `answer` 放在 `reasoning` 前面，模型会在思考之前就确定答案。JSON 是有效的，答案却是错的，没有任何验证能捕获这一点。
 
 ```json
-// BAD
+// 不好
 {"answer": "yes", "reasoning": "because ..."}
 
-// GOOD
+// 好
 {"reasoning": "... therefore ...", "answer": "yes"}
 ```
 
-Schema field order is logic, not formatting.
+Schema 字段顺序是逻辑问题，不是格式问题。
 
-## Build It
+## 动手实现
 
-### Step 1: regex-constrained generation from scratch
+### 第一步：从零实现基于正则表达式的约束生成
 
-See `code/main.py` for a standalone FSM implementation. The core idea in 30 lines:
+参见 `code/main.py` 中的独立 FSM 实现。核心思想用 30 行概括：
 
 ```python
 def mask_logits(logits, valid_token_ids):
@@ -79,9 +79,9 @@ def generate_constrained(model, tokenizer, prompt, fsm):
     return tokenizer.decode(ids)
 ```
 
-The FSM tracks what parts of the grammar we have satisfied so far. `valid_tokens(state, tokenizer)` computes which vocabulary tokens can advance the FSM without leaving an accepting path.
+FSM 跟踪当前已满足的语法部分。`valid_tokens(state, tokenizer)` 计算哪些词表 token 能让 FSM 沿接受路径前进。
 
-### Step 2: Outlines for JSON Schema
+### 第二步：使用 Outlines 处理 JSON Schema
 
 ```python
 from pydantic import BaseModel
@@ -103,9 +103,9 @@ print(result)
 # Review(sentiment='positive', confidence=0.93, evidence_span='attentive ... hot')
 ```
 
-Zero validation errors. Ever. The FSM makes invalid output unreachable.
+零验证错误，永远。FSM 让无效输出不可达。
 
-### Step 3: Instructor for provider-agnostic Pydantic
+### 第三步：使用 Instructor 实现跨厂商的 Pydantic
 
 ```python
 import instructor
@@ -128,9 +128,9 @@ invoice = client.messages.create(
 )
 ```
 
-Different mechanism. Instructor does not touch logits. It formats the schema into the prompt, parses the output, and retries on validation failure (default 3 times). Works with any provider. Retries add latency and cost. Cross-provider portability is the selling point.
+机制不同。Instructor 不修改 logits。它将 schema 格式化进提示，解析输出，并在验证失败时重试（默认 3 次）。适用于任何厂商。重试会增加延迟与成本。跨厂商可移植性是它的卖点。
 
-### Step 4: native vendor APIs
+### 第四步：原生厂商 API
 
 ```python
 from openai import OpenAI
@@ -147,76 +147,76 @@ response = client.responses.create(
 print(response.output_parsed)
 ```
 
-Server-side constrained decoding. Reliability parity with Outlines for supported schemas. No local model management. Locks you to the vendor.
+服务端约束解码。在支持的 schema 上与 Outlines 可靠性相当。无需本地模型管理。但会绑定厂商。
 
-## Pitfalls
+## 陷阱
 
-- **Recursive schemas.** Outlines flattens recursion to a fixed depth. Tree-structured outputs (nested comments, AST) need XGrammar or llguidance (CFG-based).
-- **Huge enums.** 10,000-option enum compiles slowly or times out. Switch to a retriever: predict top-k candidates first, constrain to those.
-- **Grammar too strict.** Force `date: "YYYY-MM-DD"` regex and the model cannot output `"unknown"` for missing dates. Model compensates by inventing a date. Allow `null` or a sentinel.
-- **Premature commitment.** See field-order pitfall above. Always put reasoning first.
-- **Vendor JSON mode without schema.** Pure JSON mode only guarantees valid JSON, not valid *for your use case*. Always provide a full schema.
+- **递归 schema。** Outlines 会把递归展平到固定深度。树状输出（嵌套评论、AST）需要 XGrammar 或 llguidance（基于 CFG）。
+- **巨型枚举。** 一万个选项的枚举编译缓慢或超时。改用检索器：先预测 top-k 候选，再约束到这些候选。
+- **语法过于严格。** 强制 `date: "YYYY-MM-DD"` 的正则，模型就无法为缺失日期输出 `"unknown"`。模型会补偿性地编造一个日期。应允许 `null` 或哨兵值。
+- **过早承诺。** 见上文字段顺序陷阱。永远把 reasoning 放在最前。
+- **厂商 JSON mode 不带 schema。** 纯 JSON mode 只保证 JSON 语法有效，不保证符合你的用途。始终提供完整 schema。
 
-## Use It
+## 使用建议
 
-The 2026 stack:
+2026 年的技术栈：
 
-| Situation | Pick |
+| 场景 | 选择 |
 |-----------|------|
-| OpenAI/Anthropic/Google model, simple schema | Native vendor structured output |
-| Any provider, Pydantic workflow, can tolerate retries | Instructor |
-| Local model, need 100% validity, flat schema | Outlines (FSM) |
-| Local model, recursive schema | XGrammar or llguidance |
-| Self-hosted inference server | vLLM guided decoding |
-| Batch processing with retries acceptable | Instructor + cheapest model |
+| OpenAI/Anthropic/Google 模型，简单 schema | 原生厂商结构化输出 |
+| 任意厂商，Pydantic 工作流，可接受重试 | Instructor |
+| 本地模型，需要 100% 有效性，扁平 schema | Outlines（FSM） |
+| 本地模型，递归 schema | XGrammar 或 llguidance |
+| 自托管推理服务 | vLLM guided decoding |
+| 批处理，可接受重试 | Instructor + 最便宜的模型 |
 
-## Ship It
+## 交付
 
-Save as `outputs/skill-structured-output-picker.md`:
+保存为 `outputs/skill-structured-output-picker.md`：
 
 ```markdown
 ---
 name: structured-output-picker
-description: Choose a structured output approach, schema design, and validation plan.
+description: 选择一种结构化输出方法、schema 设计与验证方案。
 version: 1.0.0
 phase: 5
 lesson: 20
 tags: [nlp, llm, structured-output]
 ---
 
-Given a use case (provider, latency budget, schema complexity, failure tolerance), output:
+给定一个用例（厂商、延迟预算、schema 复杂度、失败容忍度），输出：
 
-1. Mechanism. Native vendor structured output, Instructor retries, Outlines FSM, or XGrammar CFG. One-sentence reason.
-2. Schema design. Field order (reasoning first, answer last), nullable fields for "unknown", enum vs regex, required fields.
-3. Failure strategy. Max retries, fallback model, graceful `null` handling, out-of-distribution refusal.
-4. Validation plan. Schema compliance rate (target 100%), semantic validity (LLM-judge), field-coverage rate, latency p50/p99.
+1. 机制。原生厂商结构化输出、Instructor 重试、Outlines FSM 或 XGrammar CFG。一句话说明理由。
+2. Schema 设计。字段顺序（reasoning 在前，answer 在后）、为“未知”设置可空字段、enum 还是 regex、必填字段。
+3. 失败策略。最大重试次数、降级模型、优雅的 `null` 处理、分布外拒绝。
+4. 验证方案。Schema 合规率（目标 100%）、语义有效性（LLM 评委）、字段覆盖率、延迟 p50/p99。
 
-Refuse any design that puts `answer` or `decision` before reasoning fields. Refuse to use bare JSON mode without a schema. Flag recursive schemas behind an FSM-only library.
+拒绝任何把 `answer` 或 `decision` 放在 reasoning 字段之前的设计。拒绝不带 schema 的裸 JSON mode。对仅支持 FSM 的库使用递归 schema 时发出警告。
 ```
 
-## Exercises
+## 练习
 
-1. **Easy.** Prompt a small open-weights model (e.g., Llama-3.2-3B) without constrained decoding for `Review(sentiment, confidence, evidence_span)`. Measure the fraction that parse as valid JSON on 100 reviews.
-2. **Medium.** Same corpus with Outlines JSON mode. Compare compliance rate, latency, and semantic accuracy.
-3. **Hard.** Implement a regex-constrained decoder from scratch for phone numbers (`\d{3}-\d{3}-\d{4}`). Verify 0 invalid outputs on 1000 samples.
+1. **简单。** 对一个小型开源权重模型（例如 Llama-3.2-3B）不使用约束解码，直接要求输出 `Review(sentiment, confidence, evidence_span)`。在 100 条评论上测量能解析为合法 JSON 的比例。
+2. **中等。** 在同一批语料上使用 Outlines JSON mode。比较合规率、延迟与语义准确率。
+3. **困难。** 从零实现一个基于正则表达式的约束解码器，匹配电话号码（`\d{3}-\d{3}-\d{4}`）。在 1000 个样本上验证 0 个无效输出。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
+| 术语 | 人们的说法 | 实际含义 |
 |------|-----------------|-----------------------|
-| Constrained decoding | Force valid output | Mask invalid-token logits at every generation step. |
-| Logit processor | The thing that constrains | Function: `(logits, state) -> masked_logits`. |
-| FSM | Finite-state machine | Compiled grammar representation; O(1) valid-next-token lookup. |
-| CFG | Context-free grammar | Grammar that handles recursion; slower but more expressive than FSM. |
-| Schema field order | Does it matter? | Yes — first field commits; always put reasoning before answer. |
-| Guided decoding | vLLM's name for it | Same concept, integrated into the inference server. |
-| JSON mode | OpenAI's early version | Guarantees JSON syntax; does NOT guarantee schema match. |
+| Constrained decoding | 强制输出合法 | 在每一步生成中屏蔽非法 token 的 logits。 |
+| Logit processor | 负责约束的东西 | 函数：`(logits, state) -> masked_logits`。 |
+| FSM | 有限状态机 | 编译后的语法表示；O(1) 查询合法下一个 token。 |
+| CFG | 上下文无关语法 | 能处理递归的语法；比 FSM 慢但表达能力更强。 |
+| Schema field order | 它重要吗？ | 重要 —— 第一个字段会让模型先承诺；永远把 reasoning 放在 answer 前面。 |
+| Guided decoding | vLLM 里的叫法 | 同一概念，集成在推理服务中。 |
+| JSON mode | OpenAI 早期版本 | 保证 JSON 语法；不保证匹配 schema。 |
 
-## Further Reading
+## 延伸阅读
 
-- [Willard, Louf (2023). Efficient Guided Generation for LLMs](https://arxiv.org/abs/2307.09702) — the Outlines paper.
-- [XGrammar paper (2024)](https://arxiv.org/abs/2411.15100) — fast CFG-based constrained decoding.
-- [vLLM — Structured Outputs](https://docs.vllm.ai/en/latest/features/structured_outputs.html) — inference server integration.
-- [OpenAI — Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs) — API reference + gotchas.
-- [Instructor library](https://python.useinstructor.com/) — Pydantic + retries across providers.
-- [JSONSchemaBench (2025)](https://arxiv.org/abs/2501.10868) — benchmarking 6 constrained decoding frameworks.
+- [Willard, Louf (2023). Efficient Guided Generation for LLMs](https://arxiv.org/abs/2307.09702) —— Outlines 论文。
+- [XGrammar paper (2024)](https://arxiv.org/abs/2411.15100) —— 快速的基于 CFG 的约束解码。
+- [vLLM — Structured Outputs](https://docs.vllm.ai/en/latest/features/structured_outputs.html) —— 推理服务集成。
+- [OpenAI — Structured Outputs guide](https://platform.openai.com/docs/guides/structured-outputs) —— API 参考与注意事项。
+- [Instructor library](https://python.useinstructor.com/) —— 跨厂商的 Pydantic + 重试。
+- [JSONSchemaBench (2025)](https://arxiv.org/abs/2501.10868) —— 对 6 个约束解码框架的基准测试。
