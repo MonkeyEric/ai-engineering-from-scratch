@@ -1,143 +1,143 @@
-# Building an MCP Client — Discovery, Invocation, Session Management
+# 构建 MCP 客户端 —— 发现、调用与会话管理
 
-> Most MCP content ships server tutorials and waves a hand at the client. Client code is where the hard orchestration lives: process spawning, capability negotiation, tool list merging across multiple servers, sampling callbacks, reconnection, and namespace collision resolution. This lesson builds a multi-server client that lifts three different MCP servers into one flat tool namespace for the model.
+> 大多数 MCP 内容都在推销服务器教程，而对客户端一笔带过。客户端代码才是复杂编排真正所在：进程派生、能力协商、跨多台服务器的工具列表合并、采样回调、重连，以及命名空间冲突解决。本节课将构建一个多服务器客户端，把三个不同的 MCP 服务器提升到一个扁平的工具命名空间中供模型使用。
 
-**Type:** Build
-**Languages:** Python (stdlib, multi-server MCP client)
-**Prerequisites:** Phase 13 · 07 (building an MCP server)
-**Time:** ~75 minutes
+**类型：** 构建
+**语言：** Python（标准库，多服务器 MCP 客户端）
+**前置知识：** Phase 13 · 07（构建 MCP 服务器）
+**时间：** 约 75 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Spawn an MCP server as a child process, complete `initialize`, and send a `notifications/initialized`.
-- Maintain per-server session state (capabilities, tool list, last-seen notification ids).
-- Merge tool lists across multiple servers into one namespace with collision handling.
-- Route a tool call to the server that owns it and reassemble the response.
+- 将 MCP 服务器作为子进程派生，完成 `initialize`，并发送 `notifications/initialized`。
+- 维护每台服务器的会话状态（capabilities、工具列表、最后看到的通知 id）。
+- 将多台服务器的工具列表合并到一个命名空间中，并处理冲突。
+- 将工具调用路由到拥有它的服务器，并重新组装响应。
 
-## The Problem
+## 问题背景
 
-A real agent host (Claude Desktop, Cursor, Goose, Gemini CLI) loads multiple MCP servers at once. A user might have a filesystem server, a Postgres server, and a GitHub server running simultaneously. The client's job:
+一个真正的智能体宿主（Claude Desktop、Cursor、Goose、Gemini CLI）会同时加载多个 MCP 服务器。用户可能同时运行文件系统服务器、Postgres 服务器和 GitHub 服务器。客户端的职责：
 
-1. Spawn each server.
-2. Handshake each independently.
-3. Call `tools/list` on each and flatten the result.
-4. When the model emits `notes_search`, look it up in the merged namespace and route to the right server.
-5. Handle notifications from any server (`tools/list_changed`) without blocking.
-6. Reconnect on transport failure.
+1. 派生每个服务器。
+2. 分别与每个服务器握手。
+3. 对每个服务器调用 `tools/list`，并将结果扁平化。
+4. 当模型发出 `notes_search` 时，在合并后的命名空间中查找，并路由到正确的服务器。
+5. 在不阻塞的情况下处理来自任何服务器的通知（`tools/list_changed`）。
+6. 在传输失败时重新连接。
 
-Hand-rolling all of that is what separates "toy" from "serviceable". The official SDKs wrap this, but the mental model has to be yours.
+所有这些都需要亲手实现，这正是“玩具”与“可用”之间的分水岭。官方 SDK 会封装这些逻辑，但你的心智模型必须属于自己。
 
-## The Concept
+## 核心概念
 
-### Child-process spawning
+### 子进程派生
 
-`subprocess.Popen` with `stdin=PIPE, stdout=PIPE, stderr=PIPE`. Set `bufsize=1` and use text mode for line-by-line reads. Each server is one process; the client holds one `Popen` handle per server.
+使用 `subprocess.Popen` 并设置 `stdin=PIPE, stdout=PIPE, stderr=PIPE`。将 `bufsize` 设为 `1` 并使用文本模式以便逐行读取。每个服务器对应一个进程；客户端为每台服务器持有一个 `Popen` 句柄。
 
-### Per-server session state
+### 每台服务器的会话状态
 
-A `Session` object per server holds:
+为每台服务器维护一个 `Session` 对象，包含：
 
-- `process` — the Popen handle.
-- `capabilities` — what the server declared at `initialize`.
-- `tools` — the last `tools/list` result.
-- `pending` — map of request id to a promise/future waiting for the response.
+- `process` —— Popen 句柄。
+- `capabilities` —— 服务器在 `initialize` 时声明的能力（capabilities）。
+- `tools` —— 最新的 `tools/list` 结果。
+- `pending` —— 请求 id 到等待响应的 promise/future 的映射。
 
-Requests are async by nature; a `tools/call` sent to server A while server B is mid-call must not block. Either use threads with queues or asyncio.
+请求本质上是异步的；在向服务器 A 发送 `tools/call` 的同时，服务器 B 正处于一次调用中间，这不能阻塞。可以使用线程加队列，也可以使用 asyncio。
 
-### Merged namespace
+### 合并命名空间
 
-When the client sees the aggregate tool list, names can collide. Two servers might both expose `search`. The client has three options:
+当客户端看到聚合后的工具列表时，名称可能发生冲突。两个服务器可能都暴露了 `search`。客户端有三种选择：
 
-1. **Prefix by server name.** `notes/search`, `files/search`. Clear but ugly.
-2. **Silent first-come.** Later server's `search` overrides the earlier. Risky; hides collisions.
-3. **Collision rejection.** Refuse to load the second server; notify the user. Safest for security-sensitive hosts.
+1. **按服务器名前缀。** `notes/search`、`files/search`。清晰但丑陋。
+2. **静默先到优先。** 后到的服务器 `search` 覆盖先前的。有风险；会隐藏冲突。
+3. **冲突拒绝。** 拒绝加载第二台服务器，并通知用户。对安全敏感的宿主来说最安全。
 
-Claude Desktop uses prefix-by-server. Cursor uses collision rejection with a clear error. VS Code MCP adopts prefix-by-server as well.
+Claude Desktop 使用按服务器名前缀。Cursor 使用冲突拒绝并给出清晰错误。VS Code MCP 也采用按服务器名前缀。
 
-### Routing
+### 路由
 
-After merging, a dispatch table maps `tool_name -> session`. The model emits a call by name; the client finds the session and writes a `tools/call` message to that server's stdin, then awaits the response.
+合并后，一个调度表将 `tool_name -> session` 映射。模型按名称发出调用；客户端找到对应 session，然后向该服务器的 stdin 写入一条 `tools/call` 消息，并等待响应。
 
-### Sampling callback
+### 采样回调
 
-If the server declared the `sampling` capability at `initialize`, it may send `sampling/createMessage` asking the client to run its LLM. The client must:
+如果服务器在 `initialize` 时声明了 `sampling` 能力，它可能会发送 `sampling/createMessage`，请求客户端运行自己的 LLM。客户端必须：
 
-1. Block further requests to that server until the sample resolves, or pipeline if its implementation supports concurrency.
-2. Call its LLM provider.
-3. Send the response back to the server.
+1. 阻塞对该服务器的后续请求，直到采样完成；如果实现支持并发，也可以流水线处理。
+2. 调用自己的 LLM 提供方。
+3. 将响应发回服务器。
 
-Lesson 11 covers sampling end-to-end. This lesson stubs it for completeness.
+第 11 课完整覆盖端到端采样。本节课为完整性起见只做占位实现。
 
-### Notification handling
+### 通知处理
 
-`notifications/tools/list_changed` means re-call `tools/list`. `notifications/resources/updated` means re-read the resource if it is in use. Notifications must not produce responses — do not try to ack them.
+`notifications/tools/list_changed` 意味着需要重新调用 `tools/list`。`notifications/resources/updated` 意味着如果正在使用该资源，则需要重新读取。通知不产生响应 —— 不要尝试确认（ack）它们。
 
-A common client bug: blocking the read loop on `tools/call` while a notification sits in the stream. Use a background reader thread that pushes every message onto a queue; the main thread dequeues and dispatches.
+客户端常见 bug：在 `tools/call` 上阻塞读取循环，而通知还停留在流中。应使用后台读取线程，将每条消息推入队列；主线程从队列中取出并分发。
 
-### Reconnection
+### 重连
 
-Transport can fail: server crashed, OS killed the process, stdio pipe broke. The client detects EOF on stdout and treats the session as dead. Options:
+传输可能失败：服务器崩溃、操作系统杀死进程、stdio 管道断裂。客户端检测到 stdout 上的 EOF，并将该会话标记为死亡。可选策略：
 
-- Silently restart the server and re-handshake. OK for pure read-only servers.
-- Surface the failure to the user. OK for stateful servers with user-visible sessions.
+- 静默重启服务器并重新握手。适用于纯只读服务器。
+- 将失败暴露给用户。适用于具有用户可见会话的状态型服务器。
 
-Phase 13 · 09 covers the Streamable HTTP reconnection semantics; stdio is simpler.
+Phase 13 · 09 会覆盖 Streamable HTTP 的重连语义；stdio 更简单。
 
-### Keepalive and session id
+### 保活与会话 id
 
-Streamable HTTP uses a `Mcp-Session-Id` header. Stdio has no session id — the process identity IS the session. Keepalive pings are optional; stdio pipes do not break under inactivity.
+Streamable HTTP 使用 `Mcp-Session-Id` 请求头。Stdio 没有会话 id —— 进程身份本身就是会话。保活 ping 是可选的；stdio 管道不会因空闲而断开。
 
-## Use It
+## 使用它
 
-`code/main.py` spawns three simulated MCP servers as subprocesses, handshakes each, merges their tool lists, and routes tool calls to the right one. The "servers" are actually other Python processes running toy responders (no real LLM). Run it to see:
+`code/main.py` 将三个模拟的 MCP 服务器作为子进程派生，分别与它们握手，合并它们的工具列表，并将工具调用路由到正确的服务器。这些“服务器”实际上是运行简单响应程序的其他 Python 进程（没有真正的 LLM）。运行它可以看到：
 
-- Three initializations, each with their own capability set.
-- Three `tools/list` results merged into a 7-tool namespace.
-- A routing decision based on the tool name.
-- A collision prevented by namespace prefixing.
+- 三次初始化，每个都有自己的能力集。
+- 三个 `tools/list` 结果合并成一个包含 7 个工具的命名空间。
+- 基于工具名称的路由决策。
+- 通过命名空间前缀避免的冲突。
 
-What to look at:
+重点观察：
 
-- The `Session` dataclass holds per-server state cleanly.
-- The background reader thread dequeues every line on stdout without blocking the main thread.
-- The dispatch table is a simple `dict[str, Session]`.
-- Collision handling is explicit: when two servers declare the same name, the later one is renamed with a prefix.
+- `Session` 数据类清晰地保存了每台服务器的状态。
+- 后台读取线程从 stdout 上逐行取出数据，不会阻塞主线程。
+- 调度表是一个简单的 `dict[str, Session]`。
+- 冲突处理是显式的：当两个服务器声明相同名称时，后到的那个会被加上前缀重命名。
 
-## Ship It
+## 交付物
 
-This lesson produces `outputs/skill-mcp-client-harness.md`. Given a declarative list of MCP servers (name, command, args), the skill produces a harness that spawns them, merges tool lists, and ships a routing function with collision resolution.
+本节课生成 `outputs/skill-mcp-client-harness.md`。给定一个声明式的 MCP 服务器列表（名称、命令、参数），该技能会生成一个 harness：派生这些服务器、合并工具列表，并提供一个带冲突解决能力的路由函数。
 
-## Exercises
+## 练习
 
-1. Run `code/main.py` and watch the server spawn log. Kill one of the simulated server processes with a SIGTERM and observe how the client detects the EOF and marks that session as dead.
+1. 运行 `code/main.py`，观察服务器派生日志。用 SIGTERM 杀死其中一个模拟服务器进程，观察客户端如何检测到 EOF 并将该会话标记为死亡。
 
-2. Implement namespace prefixing. When two servers expose `search`, rename the second as `<server>/search`. Update the dispatch table and verify tool calls route correctly.
+2. 实现命名空间前缀。当两个服务器都暴露 `search` 时，将第二个重命名为 `<server>/search`。更新调度表，并验证工具调用能正确路由。
 
-3. Add a connection-pool-style backoff for server restart: exponential backoff on consecutive failures, cap at 30 seconds, emit a notification to the user after three failures.
+3. 为服务器重启添加连接池风格的退避：连续失败时指数退避，上限 30 秒，三次失败后向用户发送通知。
 
-4. Sketch a client that supports 100 concurrent MCP servers. What data structure replaces the simple dispatch dict? (Hint: trie for prefix namespacing, plus a metric for tool-count-per-server.)
+4. 草拟一个支持 100 个并发 MCP 服务器的客户端。什么数据结构会取代简单的调度字典？（提示：用于前缀命名空间的 trie，以及每个服务器工具数量的指标。）
 
-5. Port the client to the official MCP Python SDK. The SDK wraps `stdio_client` and `ClientSession`. The code should shrink from ~200 lines to ~40 lines while preserving multi-server routing.
+5. 将该客户端移植到官方 MCP Python SDK。SDK 封装了 `stdio_client` 和 `ClientSession`。代码应该从约 200 行缩减到约 40 行，同时保留多服务器路由能力。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|----------------|------------------------|
-| MCP client | "The agent host" | Process that spawns servers and orchestrates tool calls |
-| Session | "Per-server state" | Capabilities, tool list, and pending-request bookkeeping |
-| Merged namespace | "One tool list" | Flat set of tool names across all active servers |
-| Namespace collision | "Two servers same tool" | Client must prefix, reject, or first-come the duplicate |
-| Routing | "Who gets this call?" | Dispatch from tool name to owning server |
-| Background reader | "Non-blocking stdout" | Thread or task that drains server stdout into a queue |
-| Sampling callback | "LLM-as-a-service" | Client handler for `sampling/createMessage` from server |
-| `notifications/*_changed` | "Primitive mutated" | Signal the client must re-discover or re-read |
-| Reconnection policy | "When server dies" | Restart semantics when transport fails |
-| Stdio session | "Process = session" | No session id; child process lifetime is the session |
+| 术语 | 人们常说 | 实际含义 |
+|------|----------|----------|
+| MCP 客户端（MCP client） | “智能体宿主” | 派生服务器并编排工具调用的进程 |
+| 会话（Session） | “每台服务器的状态” | 能力、工具列表与待处理请求的簿记 |
+| 合并命名空间（Merged namespace） | “一个工具列表” | 所有活跃服务器之间的扁平工具名称集合 |
+| 命名空间冲突（Namespace collision） | “两个服务器有同名工具” | 客户端必须对重复项进行前缀、拒绝或先到优先处理 |
+| 路由（Routing） | “这个调用给谁？” | 从工具名称分发到拥有它的服务器 |
+| 后台读取器（Background reader） | “非阻塞 stdout” | 将服务器 stdout 抽到队列中的线程或任务 |
+| 采样回调（Sampling callback） | “LLM 即服务” | 客户端处理来自服务器的 `sampling/createMessage` |
+| `notifications/*_changed` | “原语发生变化” | 客户端必须重新发现或重新读取的信号 |
+| 重连策略（Reconnection policy） | “服务器挂了怎么办” | 传输失败时的重启语义 |
+| Stdio 会话（Stdio session） | “进程 = 会话” | 没有会话 id；子进程生命周期就是会话 |
 
-## Further Reading
+## 延伸阅读
 
-- [Model Context Protocol — Client spec](https://modelcontextprotocol.io/specification/2025-11-25/client) — canonical client behavior
-- [MCP — Quickstart client guide](https://modelcontextprotocol.io/quickstart/client) — hello-world client tutorial with the Python SDK
-- [MCP Python SDK — client module](https://github.com/modelcontextprotocol/python-sdk) — reference `ClientSession` and `stdio_client`
-- [MCP TypeScript SDK — Client](https://github.com/modelcontextprotocol/typescript-sdk) — TS parallel
-- [VS Code — MCP in extensions](https://code.visualstudio.com/api/extension-guides/ai/mcp) — how VS Code multiplexes multiple MCP servers in a single editor host
+- [Model Context Protocol — Client spec](https://modelcontextprotocol.io/specification/2025-11-25/client) —— 规范客户端行为
+- [MCP — Quickstart client guide](https://modelcontextprotocol.io/quickstart/client) —— 使用 Python SDK 的 hello-world 客户端教程
+- [MCP Python SDK — client module](https://github.com/modelcontextprotocol/python-sdk) —— `ClientSession` 与 `stdio_client` 参考
+- [MCP TypeScript SDK — Client](https://github.com/modelcontextprotocol/typescript-sdk) —— TypeScript 对应版本
+- [VS Code — MCP in extensions](https://code.visualstudio.com/api/extension-guides/ai/mcp) —— VS Code 如何在单一编辑器宿主中多路复用多个 MCP 服务器

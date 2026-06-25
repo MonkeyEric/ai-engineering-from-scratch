@@ -1,190 +1,188 @@
-# Async and Hogwild! Inference
+# 异步与 Hogwild! 推理
 
-> Speculative decoding (Phase 10 · 15) parallelizes tokens within one sequence. Multi-agent frameworks parallelize across whole sequences but force explicit coordination (voting, sub-task splitting). Hogwild! Inference (Rodionov et al., arXiv:2504.06261) does something else: run N instances of the same LLM in parallel against a SHARED key-value cache. Each worker sees every other worker's generated tokens instantly. Modern reasoning models — QwQ, DeepSeek-R1 — can self-coordinate through that shared cache without any fine-tuning. The approach is experimental but it opens an entirely new axis of inference parallelism that sits orthogonal to spec decode. This lesson implements a two-worker Hogwild! simulator in stdlib Python and explains why the shared-cache collaboration emerges from the existing model's reasoning abilities.
+> 投机解码（speculative decoding，Phase 10 · 15）在单个序列内部并行生成多个 token。多智能体（multi-agent）框架跨完整序列并行，但强制引入显式协调机制（投票、子任务拆分）。Hogwild! Inference（Rodionov 等，arXiv:2504.06261）走的是另一条路：并行运行 N 个相同的 LLM 实例，并让它们共享同一个键值（KV）缓存。每个工作进程都能即时看到其他工作进程生成的 token。现代推理模型——如 QwQ、DeepSeek-R1——无需任何微调，就能通过这个共享缓存实现自我协调。该方法仍处于实验阶段，但它开辟了与投机解码正交的、推理并行化的全新维度。本课用标准库 Python 实现一个双工作进程的 Hogwild! 模拟器，并解释这种共享缓存协作如何源于模型已有的推理能力。
 
-**Type:** Build
-**Languages:** Python (stdlib)
-**Prerequisites:** Phase 10 · 12 (inference optimization), Phase 10 · 15 (speculative decoding)
-**Time:** ~60 minutes
+**类型：** 实战构建
+**语言：** Python（标准库）
+**前置要求：** Phase 10 · 12（推理优化），Phase 10 · 15（投机解码）
+**时长：** 约 60 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Describe the three common parallel-LLM topologies (voting, sub-task, Hogwild!) and name which problems each one targets.
-- State the core Hogwild! setup: multiple workers, one shared KV cache, emergent coordination via self-prompting.
-- Compute the wall-time speedup of Hogwild! as a function of worker count `N`, task-level parallelism `p`, and coordination overhead `c`.
-- Implement a two-worker Hogwild! simulator on a toy problem and observe the emergent task division.
+- 描述三种常见的 LLM 并行拓扑（投票、子任务、Hogwild!），并指出每种针对的问题。
+- 阐述 Hogwild! 的核心设置：多个工作进程、一个共享 KV 缓存、通过自我提示涌现的协调行为。
+- 根据工作进程数 `N`、任务级并行度 `p` 和协调开销 `c`，计算 Hogwild! 的 wall-time 加速比。
+- 在一个 toy 问题上实现双工作进程的 Hogwild! 模拟器，并观察涌现的任务分工。
 
-## The Problem
+## 问题背景
 
-Modern LLMs solve hard problems by producing long chains of reasoning — 5000 tokens of step-by-step logic is common, tens of thousands of tokens happens on deep math problems. At 35 tokens/sec decode on a 70B model, 50k tokens is 24 minutes. Interactive the model is not.
+现代 LLM 通过生成冗长的推理链来解决难题——5000 个 token 的逐步推理很常见，在深奥的数学问题上甚至达到数万个 token。以 700 亿参数模型每秒 35 个 token 的解码速度，5 万个 token 需要 24 分钟。这样的模型谈不上交互性。
 
-Speculative decoding (Phase 10 · 15) gets you a 3-5x speedup by parallelizing within one sequence. Past that the sequential dependency of autoregressive decoding is the hard ceiling. Each new token depends on every prior token.
+投机解码（Phase 10 · 15）通过在单个序列内部并行化，可带来 3–5 倍加速。但在此之后，自回归解码的序列依赖就成了硬天花板：每个新 token 都依赖于之前的所有 token。
 
-The obvious question: can we parallelize across sequences? Run multiple copies of the same model on the same problem, let them cooperate, have them divide the work?
+一个自然的问题是：能否跨序列并行？让同一个模型的多个副本在同一问题上协作，并让它们分工？
 
-Prior work: voting ensembles (run N models, pick the majority answer), tree-of-thought (branch reasoning paths and recombine), and multi-agent frameworks (assign each agent a sub-task, use a coordinator). These all help in specific task domains. They all also introduce explicit coordination machinery — voting rules, branch-and-prune logic, agent-to-agent messaging protocols.
+现有方案包括：投票集成（voting ensemble，运行 N 个模型并选择多数答案）、思维树（tree-of-thought，分支推理路径后再合并）以及多智能体框架（multi-agent framework，为每个智能体分配子任务并引入协调器）。它们在特定任务领域都有帮助，但也都引入了显式的协调机制——投票规则、分支剪枝逻辑、智能体之间的消息协议。
 
-Hogwild! Inference takes a different approach. N workers share a single KV cache. Each worker sees every other worker's generated tokens immediately, as if they were its own context. The workers — without any training or fine-tuning — figure out how to divide the work. Modern reasoning models (QwQ, DeepSeek-R1, Claude-family reasoning mode) can read the shared cache and say things like "I see worker 2 already handled the base case, so I'll work on the inductive step."
+Hogwild! Inference 采取了另一种思路：N 个工作进程共享同一个 KV 缓存。每个工作进程都能即时看到其他工作进程生成的 token，仿佛那是它自己的上下文。这些工作进程无需任何训练或微调，就能自行学会如何分工。现代推理模型（QwQ、DeepSeek-R1、Claude 家族推理模式）可以读取共享缓存，并产生类似“我看到 worker 2 已经处理了基本情况，那我就来做归纳步骤”的推理。
 
-The speedup is workload-dependent and experimental as of April 2026. But the idea is worth knowing because it opens a new axis of inference parallelism.
+加速比取决于工作负载，并且截至 2026 年 4 月仍处于实验阶段。但这个思路值得了解，因为它开辟了推理并行化的全新维度。
 
-## The Concept
+## 核心概念
 
-### The setup
+### 设置
 
-Initialize N worker processes, all running the same LLM. Instead of per-worker KV caches, maintain ONE shared cache. When worker `i` generates token `t_j`, the token is written into the shared cache at the next position. When worker `k` takes its next step, it reads the current state of the cache (which includes everything all N workers have generated so far).
+初始化 N 个工作进程，全部运行同一个 LLM。不再为每个工作进程维护独立的 KV 缓存，而是维护一个共享缓存。当工作进程 `i` 生成 token `t_j` 时，该 token 被写入共享缓存的下一个位置。当工作进程 `k` 执行下一步时，它会读取缓存的当前状态（包含到目前为止所有 N 个工作进程生成的内容）。
 
-At step time, workers race to write tokens. There is no per-worker position index — the cache is a single growing sequence. Order is determined by write arrival time.
+在每个步骤，工作进程竞争写入 token。不存在按工作进程划分的位置索引——缓存就是一个不断增长的全局序列。写入顺序由到达时间决定。
 
-### Why coordination emerges
+### 协调为何涌现
 
-The workers share a prompt. Typically something like "You are one of N instances working together on this problem. Each instance reads the shared memory and can see what other instances have written. Avoid redundant work." The prompt plus the shared cache is enough. Reasoning models read the cache, notice which parts of the problem have already been attempted, and (often but not always) pivot to unexplored parts.
+所有工作进程共享同一段提示词。通常类似这样：“你是 N 个实例中的一个，正在协作解决这个问题。每个实例都能读取共享内存，并看到其他实例写下的内容。请避免重复工作。”仅凭这段提示词加上共享缓存就足够了。推理模型读取缓存后，会注意到问题的哪些部分已经被尝试过，并（通常但不总是）转向尚未探索的部分。
 
-The Hogwild! paper (Rodionov et al., 2025) reports observations like:
+Hogwild! 论文（Rodionov 等，2025）报告了如下观察：
 
-- Workers formulate plans and communicate them to other workers via the cache.
-- Workers notice errors in other workers' reasoning and call them out.
-- Workers adapt when a plan fails and propose alternatives.
-- When prompted to check for redundancy, workers detect it and pivot.
+- 工作进程制定计划，并通过缓存与其他工作进程沟通。
+- 工作进程发现其他工作进程推理中的错误，并指出它们。
+- 当某个计划失败时，工作进程会调整并提出替代方案。
+- 当被提示检查重复时，工作进程能检测到重复并转向其他方向。
 
-None of this requires fine-tuning. The emergent behavior comes from the reasoning capabilities the model already has.
+这些行为都不需要微调。涌现行为来自模型已有的推理能力。
 
-### The naming
+### 命名由来
 
-The paper's name riffs on Hogwild! SGD (Recht et al., 2011), an asynchronous-update optimizer. The analogy: SGD's asynchronous workers all write to a shared parameter vector; Hogwild! Inference's workers all write to a shared KV cache. Both rely on empirical convergence rather than synchronization guarantees.
+论文名称借用了 Hogwild! SGD（Recht 等，2011），一种异步更新优化器。类比关系是：Hogwild! SGD 的异步工作进程都向同一个共享参数向量写入；Hogwild! Inference 的工作进程则都向同一个共享 KV 缓存写入。两者都依赖经验上的收敛，而非同步保证。
 
-### RoPE makes this tractable
+### RoPE 让这成为可能
 
-Rotary Position Embeddings (RoPE, Su et al. 2021) encode position information via rotation in the Q and K vectors. Because positions are rotations and not baked-in offsets, a token's position can shift without recomputing the KV cache entry. When worker `i` writes into the shared cache at position `p`, other workers reading that position can use the cached entry directly — no re-rotation needed.
+旋转位置编码（Rotary Position Embeddings，RoPE，Su 等 2021）通过在 Q 和 K 向量中做旋转来编码位置信息。由于位置是旋转量而非固定的偏移量，token 的位置可以移动，而无需重新计算 KV 缓存项。当工作进程 `i` 在位置 `p` 写入共享缓存时，其他工作进程读取该位置时可以直接使用缓存项——无需重新旋转。
 
-In a learned-position or absolute-position model, Hogwild! would need cache invalidation on every concurrent write. RoPE lets the cache stay stable.
+在可学习位置或绝对位置模型中，Hogwild! 需要在每次并发写入时都使缓存失效。RoPE 让缓存保持稳定。
 
-### Wall-time math
+### 墙钟时间公式
 
-Let `T_serial` be the time for one worker to solve the problem alone. Let `p` be the task-level parallelizable fraction. Let `c` be the per-step coordination overhead (reading the extended cache, deciding what to write).
+设 `T_serial` 为一个工作进程单独解决问题所需的时间。设 `p` 为任务级可并行比例。设 `c` 为每步协调开销（读取扩展后的缓存、决定写什么）。
 
-Single-worker time: `T_serial`.
-N-worker Hogwild! time, if coordination is free: `T_serial * ((1 - p) + p / N)`. Classic Amdahl.
-With coordination overhead: `T_serial * ((1 - p) + p / N) + c * steps_per_worker`.
+单工作进程时间：`T_serial`。
 
-For a worker to be productive, `c` must be small relative to the per-step decode time. On reasoning models producing 5k+ tokens, the workers can afford hundreds of tokens of coordination overhead and still come out ahead. On short chat tasks, coordination dominates and Hogwild! is worse than serial.
+N 工作进程 Hogwild! 时间（若协调无开销）：`T_serial * ((1 - p) + p / N)`。这是经典的阿姆达尔定律（Amdahl's law）。
 
-### Concrete example
+考虑协调开销：`T_serial * ((1 - p) + p / N) + c * steps_per_worker`。
 
-Reasoning problem: 10k tokens of chain-of-thought. Suppose the problem has `p = 0.7` parallelizable content (different proof strategies, different case analyses) and `c = 200` tokens of coordination overhead per worker. With `N = 4` workers:
+为了让工作进程真正产生收益，`c` 必须相对于每步解码时间足够小。在生成 5000+ token 的推理模型上，工作进程可以承受数百个 token 的协调开销，最终仍然更快。而在短对话任务上，协调开销占主导，Hogwild! 反而比串行更慢。
 
-- Serial time: 10000 decode steps.
-- Hogwild! time: 10000 * (0.3 + 0.7 / 4) + 200 * 4 = 10000 * 0.475 + 800 = 5550 decode steps.
-- Speedup: 10000 / 5550 = 1.8x.
+### 具体示例
 
-That is modest. But on longer reasoning problems (50k tokens), the coordination overhead amortizes and the speedup pushes 2.5-3x. Hogwild! is the inference equivalent of thread-level parallelism in a language that lets you write multi-threaded code naturally.
+推理问题：1 万个 token 的思维链。假设该问题有 `p = 0.7` 的内容可并行（不同的证明策略、不同的案例分析），每个工作进程的协调开销为 `c = 200` 个 token。使用 `N = 4` 个工作进程：
 
-### When to reach for Hogwild!
+- 串行时间：10000 个解码步。
+- Hogwild! 时间：10000 * (0.3 + 0.7 / 4) + 200 * 4 = 10000 * 0.475 + 800 = 5550 个解码步。
+- 加速比：10000 / 5550 = 1.8 倍。
 
-- Long reasoning problems (thousands of tokens) where the task can be parallelized across independent sub-goals.
-- Reasoning models that have been trained to think step by step. Non-reasoning models do not self-coordinate well.
-- Single-node deployments with enough VRAM to hold the shared cache plus N worker processes. The cache is shared, but each worker has its own activation memory.
+这比较温和。但在更长的推理问题（5 万个 token）上，协调开销被摊薄，加速比可达 2.5–3 倍。Hogwild! 相当于在一种支持自然多线程编程的语言中，推理层面的线程级并行。
 
-### When not to
+### 何时使用 Hogwild!
 
-- Short interactive chat. Coordination overhead dominates.
-- Tasks that don't parallelize (single linear proof, single compilation). N=1 is the max.
-- Non-reasoning models. No coordination emerges.
-- Multi-node deployments. The shared cache needs very fast cross-worker synchronization. Intra-node is fine; cross-node is a latency disaster.
+- 长推理问题（数千个 token），任务可以跨独立子目标并行化。
+- 经过逐步思考训练的推理模型。非推理模型难以自我协调。
+- 单节点部署，拥有足够的显存来容纳共享缓存和 N 个工作进程。缓存是共享的，但每个工作进程有自己的激活内存。
 
-### The experimental status
+### 何时不使用
 
-As of April 2026, Hogwild! is a research method with an open-source PyTorch implementation. Production adoption has not happened. Three blockers:
+- 短交互式对话。协调开销占主导。
+- 无法并行化的任务（单一线性证明、单次编译）。N=1 已是上限。
+- 非推理模型。不会产生协调行为。
+- 多节点部署。共享缓存需要极快的跨工作进程同步。节点内可行，跨节点则是延迟灾难。
 
-1. Shared KV cache management across concurrent processes is non-trivial engineering.
-2. Emergent coordination is task-dependent; benchmarks are still being built.
-3. The speedups are modest compared to what speculative decoding already delivers, and the two can be combined but the combined engineering is another layer.
+### 实验现状
 
-Worth knowing. Worth experimenting with. Not yet worth betting a product on.
+截至 2026 年 4 月，Hogwild! 仍是一种研究方法，已有开源 PyTorch 实现，但尚未投入生产。三大阻碍：
 
-## Build It
+1. 跨并发进程的共享 KV 缓存管理是一项不简单的工程工作。
+2. 涌现协调行为依赖任务，相关基准测试仍在建设中。
+3. 与投机解码已有的加速相比，Hogwild! 的加速比较温和；虽然两者可以组合，但组合后的工程复杂度又上升一层。
 
-`code/main.py` implements a toy Hogwild! simulator:
+值得了解，值得实验，但还不值得把产品押注在它上面。
 
-- Two worker processes, each a deterministic "LLM" that produces one of several token categories (work-token, observe-token, coordinate-token) with known probabilities.
-- A shared cache (just a list of tokens) that both workers read and write.
-- A simple coordination logic: when a worker sees that the other has already produced enough work tokens in a category, it picks a different category.
+## 动手实现
 
-The simulator runs for a fixed step budget and reports:
+`code/main.py` 实现了一个玩具级 Hogwild! 模拟器：
 
-- Total work-tokens produced.
-- Total wall time (number of worker steps).
-- Effective speedup over a single worker.
-- A trace of which worker wrote which token.
+- 两个工作进程，每个都是一个确定性的“LLM”，按照已知概率生成若干 token 类别之一（work-token、observe-token、coordinate-token）。
+- 一个共享缓存（仅是一个 token 列表），两个工作进程都向其中读写。
+- 一个简单的协调逻辑：当某个工作进程发现另一个工作进程已经在某类别中生成了足够多的 work token，它就切换到另一个类别。
 
-### Step 1: the shared cache
+模拟器在固定的步数预算内运行，并报告：
 
-A list that both workers append to. Simple locking (Python `threading.Lock`) in a real implementation; we simulate with a counter.
+- 产生的 work-token 总数。
+- 总 wall time（工作进程步数）。
+- 相对于单工作进程的有效加速比。
+- 每个 token 由哪个工作进程写入的轨迹。
 
-### Step 2: the worker loop
+### 步骤 1：共享缓存
 
-Each worker, on each step:
+一个两个工作进程都会追加元素的列表。在真实实现中可使用简单的锁（Python `threading.Lock`）；这里我们用一个计数器来模拟。
 
-- Reads the current shared cache.
-- Decides what category of token to write based on what is already there.
-- Writes one token.
+### 步骤 2：工作进程循环
 
-### Step 3: the coordination heuristic
+每个工作进程在每一步都执行：
 
-If category X already has K tokens in the cache and worker's intended category is X, worker switches to category Y. This is a toy stand-in for the reasoning-model behavior of "notice this is already covered, do something else instead."
+- 读取当前共享缓存。
+- 根据已有内容决定写入哪一类 token。
+- 写入一个 token。
 
-### Step 4: measured speedup
+### 步骤 3：协调启发式
 
-Run the simulator with N=1 worker and with N=2 workers, same total step budget. Count work-tokens produced. N=2 should produce roughly 1.5-1.8x more work-tokens because of the coordination-driven task division.
+如果类别 X 在缓存中已有 K 个 token，而某工作进程打算写类别 X，那么它会切换到类别 Y。这是对推理模型“注意到某部分已被覆盖，就改做其他事情”行为的玩具级替代。
 
-### Step 5: stress the coordination
+### 步骤 4：测量加速比
 
-Reduce the coordination heuristic's sensitivity. Run again. Observe that without good coordination, N=2 redundantly produces the same tokens and the speedup drops below 1. This matches the paper's observation: the trick only works if the workers have the reasoning capacity to self-coordinate.
+分别用 N=1 和 N=2 个工作进程运行模拟器，保持相同的总步数预算。统计产生的 work-token 数量。由于协调驱动的任务分工，N=2 应产生约 1.5–1.8 倍的 work-token。
 
-## Use It
+### 步骤 5：给协调施加压力
 
-Hogwild! integration in production as of April 2026 is research-grade. The reference implementation from Yandex/HSE/IST is PyTorch-based and targets single-node multi-process setups on DeepSeek-R1 and QwQ models.
+降低协调启发式的敏感度。再次运行。可以观察到，如果没有良好的协调，N=2 会冗余地生成相同的 token，加速比甚至会降到 1 以下。这与论文的观察一致：只有当工作进程具备自我协调的推理能力时，这个技巧才有效。
 
-Pragmatic adoption path:
+## 如何使用
 
-1. Profile your reasoning-task workload. Measure the fraction of tokens that are exploratory (multiple strategies, case analyses, search) vs linear.
-2. If exploration dominates, run a two-worker Hogwild! experiment. Measure wall-time improvement.
-3. If the improvement is under 1.3x, you are in the coordination-dominated regime. Revert to single-worker.
-4. If the improvement is over 1.5x, push to N=4 and measure again. Diminishing returns typically hit around N=4-8.
+截至 2026 年 4 月，Hogwild! 在生产环境中的集成仍处于研究级别。来自 Yandex/HSE/IST 的参考实现基于 PyTorch，面向 DeepSeek-R1 和 QwQ 模型的单节点多进程部署。
 
-Combine with speculative decoding: each Hogwild! worker can independently use spec decode. The two speedups multiply (roughly), bringing a 3x spec decode and 1.8x Hogwild! to an effective 5.4x over naive single-worker decoding.
+务实的采用路径：
 
-## Ship It
+1. 分析你的推理任务负载。测量探索性 token（多策略、案例分析、搜索）与线性推进 token 的比例。
+2. 如果探索占主导，运行一个双工作进程的 Hogwild! 实验，测量 wall-time 的改善。
+3. 如果提升不到 1.3 倍，说明你处于协调开销主导区间。revert 到单工作进程。
+4. 如果提升超过 1.5 倍，扩展到 N=4 再次测量。收益递减通常出现在 N=4–8 附近。
 
-This lesson produces `outputs/skill-parallel-inference-router.md`. Given a reasoning workload profile (token budget, task parallelism profile, model family, deployment target), it routes between voting, tree-of-thought, multi-agent, Hogwild!, and speculative decoding strategies.
+与投机解码结合：每个 Hogwild! 工作进程都可以独立使用投机解码。两种加速比大致相乘，3 倍投机解码与 1.8 倍 Hogwild! 组合，可相对于朴素单工作进程解码获得约 5.4 倍的有效加速。
 
-## Exercises
+## 交付成果
 
-1. Run `code/main.py` with the default settings. Confirm the N=2 Hogwild! configuration produces more work-tokens than the N=1 baseline in the same wall time.
+本课产出 `outputs/skill-parallel-inference-router.md`。给定一个推理任务画像（token 预算、任务并行度画像、模型家族、部署目标），它会在投票、思维树、多智能体、Hogwild! 和投机解码策略之间做路由选择。
 
-2. Reduce the coordination heuristic's strength (set `coordination_weight=0.1`). Re-run. Show that speedup collapses. Explain why: the workers duplicate effort when they cannot coordinate.
+## 练习
 
-3. Compute the expected Hogwild! speedup for a 50k-token reasoning task with `p=0.8, c=500` and N=4 workers. Do the same for a 1k-token chat task with `p=0.3, c=200` and N=4. Why is one a win and the other a loss?
+1. 用默认设置运行 `code/main.py`。确认在相同 wall time 内，N=2 的 Hogwild! 配置比 N=1 的基线产生更多 work-token。
+2. 降低协调启发式的强度（设置 `coordination_weight=0.1`）。重新运行。说明加速比会崩塌。解释原因：当工作进程无法协调时，它们会重复劳动。
+3. 计算一个 5 万 token 推理任务在 `p=0.8, c=500`、N=4 时的预期 Hogwild! 加速比。再计算一个 1000 token 对话任务在 `p=0.3, c=200`、N=4 时的结果。为什么一个是收益，另一个是亏损？
+4. 阅读 Hogwild! 论文的 Section 4（初步评估）。找出作者报告的两种失败模式。描述更好的协调提示词如何缓解每一种。
+5. 在玩具示例中把 Hogwild! 与投机解码结合：每个工作进程内部使用 2-token 的投机解码。报告相乘后的加速比。当两个工作进程都想扩展同一个共享缓存前缀时，会出现什么簿记问题？
 
-4. Read the Hogwild! paper's Section 4 (preliminary evaluation). Identify the two failure modes the authors report. Describe how a better coordination prompt might mitigate each.
+## 关键术语
 
-5. Combine Hogwild! with speculative decoding in the toy: each worker uses a 2-token spec-decode internally. Report the multiplicative speedup. What bookkeeping problem arises when two workers both want to extend the same shared-cache prefix?
+| 术语 | 人们常说 | 实际含义 |
+|------|----------|----------|
+| Hogwild! | “并行工作进程，共享缓存” | N 个相同的 LLM 实例并发运行，共享一个 KV 缓存；通过自我提示涌现协调行为 |
+| 共享 KV 缓存 | “协调媒介” | 一个不断增长、所有工作进程都读写的 KV 缓冲区；让各工作进程之间能即时看到彼此生成的 token |
+| 涌现协调 | “无需训练” | 具备推理能力的 LLM 可以读取共享缓存并分工，无需任何微调或显式协议 |
+| 协调开销（c） | “用于定位的 token” | 每个工作进程读取扩展缓存并决定下一步动作的代价；必须远小于总解码时间 |
+| 可并行比例（p） | “可以并行运行的部分” | 任务级并行度：总工作中不具内在顺序依赖的比例 |
+| RoPE 赋能 Hogwild! | “旋转位置具有平移不变性” | 因为位置是旋转量，写入共享缓存时无需重新计算之前的 token |
+| 投票集成 | “运行 N 个，选多数” | 最简单的并行推理拓扑；对分类任务有用，对长形式推理帮助有限 |
+| 思维树 | “分支并剪枝” | 探索多个分支并剪枝的推理策略；需要显式协调逻辑 |
+| 多智能体框架 | “分配子任务” | 每个智能体有角色，由协调器编排；协议开销较大 |
 
-## Key Terms
-
-| Term | What people say | What it actually means |
-|------|----------------|------------------------|
-| Hogwild! | "Parallel workers, shared cache" | N instances of the same LLM running concurrently with one shared KV cache; emergent coordination via self-prompting |
-| Shared KV cache | "The coordination medium" | A single growing KV buffer that all workers read and write; enables instant token visibility across workers |
-| Emergent coordination | "No training needed" | Reasoning-capable LLMs can read the shared cache and divide work without any fine-tuning or explicit protocol |
-| Coordination overhead (c) | "Tokens spent orienting" | The per-worker cost of reading the extended cache and deciding what to do; must stay small vs total decode time |
-| Parallelizable fraction (p) | "What can run in parallel" | Task-level parallelism: the fraction of the total work that is not intrinsically sequential |
-| RoPE enables Hogwild! | "Rotary positions are shift-invariant" | Because positions are rotations, writing into a shared cache does not require recomputing prior tokens |
-| Voting ensemble | "Run N, pick the majority" | The simplest parallel inference topology; useful for classification, less for long-form reasoning |
-| Tree of thought | "Branch and prune" | Reasoning strategy that explores multiple branches and prunes; explicit coordination logic |
-| Multi-agent framework | "Assign sub-tasks" | Each agent gets a role; a coordinator orchestrates; heavy protocol overhead |
-
-## Further Reading
+## 延伸阅读
 
 - [Rodionov et al. — Hogwild! Inference: Parallel LLM Generation via Concurrent Attention (arXiv:2504.06261)](https://arxiv.org/abs/2504.06261) — the Hogwild! paper, preliminary evaluation on QwQ and DeepSeek-R1
 - [Recht, Re, Wright, Niu — Hogwild!: A Lock-Free Approach to Parallelizing Stochastic Gradient Descent (arXiv:1106.5730, NeurIPS 2011)](https://arxiv.org/abs/1106.5730) — the original Hogwild!, the naming origin

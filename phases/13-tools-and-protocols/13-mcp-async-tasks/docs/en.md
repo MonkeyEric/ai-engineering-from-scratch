@@ -1,34 +1,34 @@
-# Async Tasks (SEP-1686) — Call-Now, Fetch-Later for Long-Running Work
+# 异步任务（Async Tasks，SEP-1686）——长时间工作的“立即调用、稍后获取”
 
-> Real agent work takes minutes to hours: CI runs, deep-research synthesis, batch exports. Synchronous tool calls drop connections, time out, or block the UI. SEP-1686, merged in 2025-11-25, adds a Tasks primitive: any request can be augmented to become a task, and the result can be fetched later or streamed via state notifications. Drift-risk note: Tasks are experimental through H1 2026; SDK surface is still being designed around the spec.
+> 真实的智能体工作往往耗时数分钟到数小时：CI 运行、深度研究综合、批量导出。同步工具调用会断开连接、超时或阻塞 UI。SEP-1686 于 2025-11-25 合并，引入了任务（Tasks）原语：任何请求都可以被增强为任务，结果可以稍后获取，或通过状态通知以流式接收。漂移风险说明：截至 2026 年上半年，Tasks 仍处于实验阶段；SDK 接口仍在围绕该规范进行设计。
 
-**Type:** Build
-**Languages:** Python (stdlib, async task state machine)
-**Prerequisites:** Phase 13 · 07 (MCP server), Phase 13 · 09 (transports)
-**Time:** ~75 minutes
+**类型：** 构建
+**语言：** Python（标准库、异步任务状态机）
+**前置条件：** Phase 13 · 07（MCP server），Phase 13 · 09（transports）
+**时间：** ~75 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Identify when to promote a tool from synchronous to task-augmented (>30 seconds of server-side work).
-- Walk the task lifecycle: `working` → `input_required` → `completed` / `failed` / `cancelled`.
-- Persist task state so crashes do not lose in-flight work.
-- Poll `tasks/status` and fetch `tasks/result` correctly.
+- 判断何时将工具从同步调用升级为任务增强型调用（服务器端运行超过 30 秒）。
+- 掌握任务生命周期：`working` → `input_required` → `completed` / `failed` / `cancelled`。
+- 持久化任务状态，使崩溃不会丢失进行中的工作。
+- 正确轮询 `tasks/status` 并获取 `tasks/result`。
 
-## The Problem
+## 问题
 
-A `generate_report` tool runs a multi-minute extraction pipeline. Options under the synchronous model:
+`generate_report` 工具会运行一个耗时数分钟的数据提取流水线。在同步模型下，可选方案如下：
 
-1. Hold the connection open for three minutes. Remote transports drop it; clients time out; UIs freeze.
-2. Return immediately with a placeholder; require the client to poll a custom endpoint. Breaks the MCP uniformity.
-3. Fire-and-forget; no result.
+1. 保持连接打开三分钟。远程传输会断开它；客户端超时；UI 冻结。
+2. 立即返回占位符；要求客户端轮询自定义端点。这会破坏 MCP 的统一性。
+3. 即发即弃；没有结果。
 
-None are good. SEP-1686 adds a fourth: task augmentation. Any request (typically `tools/call`) can be tagged as a task. The server returns a task id immediately. The client polls `tasks/status` and fetches `tasks/result` when done. Server-side state survives restarts.
+这些方案都不理想。SEP-1686 增加了第四种方案：任务增强（task augmentation）。任何请求（通常是 `tools/call`）都可以被标记为任务。服务器立即返回任务 id。客户端轮询 `tasks/status`，完成后获取 `tasks/result`。服务器端状态在重启后仍然保留。
 
-## The Concept
+## 概念
 
-### Task augmentation
+### 任务增强
 
-A request becomes a task by setting `params._meta.task.required: true` (or `optional: true`, server decides). The server responds immediately with:
+通过设置 `params._meta.task.required: true`（或 `optional: true`，由服务器决定），一个请求即可变为任务。服务器会立即返回：
 
 ```json
 {
@@ -45,116 +45,112 @@ A request becomes a task by setting `params._meta.task.required: true` (or `opti
 }
 ```
 
-`ttl` is the server's promise to retain state; after ttl the task result is discarded.
+`ttl` 是服务器承诺保留状态的时间；超过 ttl 后，任务结果将被丢弃。
 
-### Per-tool opt-in
+### 按工具选择加入
 
-Tool annotations can declare task support:
+工具注解（tool annotations）可以声明任务支持：
 
-- `taskSupport: "forbidden"` — this tool always runs synchronously. Safe for fast tools.
-- `taskSupport: "optional"` — client may request task-augmentation.
-- `taskSupport: "required"` — client MUST use task augmentation.
+- `taskSupport: "forbidden"` — 该工具始终以同步方式运行。适用于快速工具。
+- `taskSupport: "optional"` — 客户端可以请求任务增强。
+- `taskSupport: "required"` — 客户端必须使用任务增强。
 
-A `generate_report` tool would be `required`. A `notes_search` tool would be `forbidden`.
+`generate_report` 工具应为 `required`。`notes_search` 工具应为 `forbidden`。
 
-### States
+### 状态
 
 ```
-working  -> input_required -> working  (loop via elicitation)
+working  -> input_required -> working  （通过请求补充信息循环）
 working  -> completed
 working  -> failed
 working  -> cancelled
 ```
 
-State machine is append-only: once `completed`, `failed`, or `cancelled`, the task is terminal.
+状态机是只追加（append-only）的：一旦进入 `completed`、`failed` 或 `cancelled`，任务即进入终止状态。
 
-### Methods
+### 方法
 
-- `tasks/status {taskId}` — returns current state and a progress hint.
-- `tasks/result {taskId}` — blocks or returns 404 if not yet done.
-- `tasks/cancel {taskId}` — idempotent; terminal states ignore.
-- `tasks/list` — optional; enumerates active and recently-completed tasks.
+- `tasks/status {taskId}` — 返回当前状态和可选的进度提示。
+- `tasks/result {taskId}` — 阻塞返回；若尚未完成则返回 404。
+- `tasks/cancel {taskId}` — 幂等；终止状态会忽略该请求。
+- `tasks/list` — 可选；枚举活动和最近完成的任务。
 
-### Streaming state changes
+### 流式状态变更
 
-When the server supports it, the client can subscribe to state notifications:
+当服务器支持时，客户端可以订阅状态通知：
 
 ```
 server -> notifications/tasks/updated {taskId, state, progress?}
 ```
 
-Clients that stream rather than poll get better UX. Polling is always supported as the minimal surface.
+采用流式接收而非轮询能带来更好的用户体验。轮询始终作为最小接口被支持。
 
-### Durable state
+### 持久化状态
 
-The spec requires servers that declare task support to persist state. A crash should not lose completed results within ttl. Stores range from SQLite to Redis to the filesystem. The Lesson 13 harness uses the filesystem.
+规范要求声明支持任务的服务器必须持久化状态。崩溃不应导致 ttl 内已完成的结果丢失。存储可以是 SQLite、Redis 或文件系统。本课 13 的实验装置使用文件系统。
 
-### Cancellation semantics
+### 取消语义
 
-`tasks/cancel` is idempotent. If the task is mid-execution, the server attempts to stop (check executor-cooperative cancellation). If already terminal, the request is a no-op.
+`tasks/cancel` 是幂等（idempotent）的。如果任务正在执行，服务器会尝试停止它（检查执行器协作式取消）。如果已是终止状态，该请求即为无操作。
 
-### Crash recovery
+### 崩溃恢复
 
-When the server process restarts:
+服务器进程重启时：
 
-1. Load all persisted task states.
-2. Mark any `working` tasks whose process died as `failed` with error `CRASH_RECOVERY`.
-3. Preserve `completed` / `failed` / `cancelled` for their ttl.
+1. 加载所有持久化的任务状态。
+2. 将因进程死亡而遗留的 `working` 任务标记为 `failed`，错误为 `CRASH_RECOVERY`。
+3. 在 ttl 内保留 `completed` / `failed` / `cancelled`。
 
-### Async tasks plus sampling
+### 异步任务与采样
 
-A task can itself call `sampling/createMessage`. This is how long-running research tasks work: the server's task thread samples the client's model as needed, while the client's UI shows the task as `working` with periodic progress updates.
+任务本身可以调用 `sampling/createMessage`。这就是长时间运行研究任务的工作方式：服务器的任务线程按需向客户端模型发起采样（sampling），而客户端 UI 将任务显示为 `working`，并附带定期进度更新。
 
-### Why this is experimental
+### 为何仍处于实验阶段
 
-SEP-1686 shipped in 2025-11-25 but the broader roadmap calls out three open issues: durable subscription primitives, subtasks (parent-child task relationships), and result-TTL standardization. Expect the spec to evolve through 2026. Production code should treat Tasks as stable only for the common case and guard against future SDK changes for subtasks.
+SEP-1686 已于 2025-11-25 发布，但更广泛的路线图列出了三个开放问题：持久订阅原语（durable subscription primitives）、子任务（subtasks，父子任务关系）以及结果 ttl 标准化。预计该规范将在 2026 年演进。生产代码应仅将 Tasks 视为常见场景下的稳定功能，并对子任务可能带来的未来 SDK 变更做好防护。
 
-## Use It
+## 使用它
 
-`code/main.py` implements a durable task store (filesystem-backed) and a `generate_report` tool that runs in a background thread. Clients call the tool, get a task id immediately, poll `tasks/status` while the worker updates progress, and fetch `tasks/result` when done. Cancellation works; crash recovery is simulated by killing the worker thread and reloading state.
+`code/main.py` 实现了一个持久化任务存储（文件系统后端）和一个在后台线程运行的 `generate_report` 工具。客户端调用该工具后会立即获得任务 id，在 worker 更新进度期间轮询 `tasks/status`，完成后获取 `tasks/result`。取消有效；通过杀死 worker 线程并重新加载状态来模拟崩溃恢复。
 
-What to look at:
+需要关注：
 
-- Task state JSON persisted to `/tmp/lesson-13-tasks/<id>.json`.
-- Worker thread updates `progress` field; poll shows it advancing.
-- Cancellation from client side sets an event; worker checks and exits early.
-- State reload on "crash" marks the in-flight task as `failed` with `CRASH_RECOVERY`.
+- 任务状态 JSON 持久化到 `/tmp/lesson-13-tasks/<id>.json`。
+- Worker 线程更新 `progress` 字段；轮询会显示它不断推进。
+- 客户端发起的取消会设置一个事件；worker 检查后会提前退出。
+- “崩溃”后的状态重载会将进行中的任务标记为 `failed`，错误为 `CRASH_RECOVERY`。
 
-## Ship It
+## 交付它
 
-This lesson produces `outputs/skill-task-store-designer.md`. Given a long-running tool (research, build, export), the skill designs the task store (state shape, ttl, durability), picks the right taskSupport flag, and sketches progress notifications.
+本课会生成 `outputs/skill-task-store-designer.md`。针对一个长时间运行的工具（研究、构建、导出），该 skill 会设计任务存储（状态结构、ttl、持久化）、选择合适的 taskSupport 标志，并草拟进度通知。
 
-## Exercises
+## 练习
 
-1. Run `code/main.py`. Kick off a `generate_report` task, poll status, then fetch the result.
+1. 运行 `code/main.py`。启动一个 `generate_report` 任务，轮询状态，然后获取结果。
+2. 在运行过程中调用 `tasks/cancel`。验证 worker 响应并且状态变为 `cancelled`。
+3. 模拟崩溃恢复：杀死 worker 线程，重新启动加载器，并观察 `CRASH_RECOVERY` 失败模式。
+4. 将存储扩展到 SQLite。持久化收益相同；查询能力增强（例如列出会话 X 的所有任务）。
+5. 阅读 2026 年的 MCP 路线图文章。找出最有可能在未来一年影响 SDK API 设计的与 Tasks 相关的开放问题。
 
-2. Add a `tasks/cancel` call mid-run. Verify the worker honors it and the state becomes `cancelled`.
+## 关键术语
 
-3. Simulate crash recovery: kill the worker thread, restart the loader, and observe the `CRASH_RECOVERY` failure mode.
+| 术语 | 人们常说 | 实际含义 |
+|------|----------|----------|
+| 任务（Task） | “长时间运行的工具调用” | 通过 `_meta.task` 增强以异步执行的请求 |
+| SEP-1686 | “Tasks 规范” | 于 2025-11-25 加入 Tasks 的规范演进提案（Spec Evolution Proposal） |
+| `_meta.task` | “任务信封” | 包含 id、state、ttl 的每次请求元数据 |
+| taskSupport | “工具标志” | 每个工具的 `forbidden` / `optional` / `required` |
+| `tasks/status` | “轮询方法” | 获取当前状态和可选的进度提示 |
+| `tasks/result` | “获取结果” | 返回已完成负载，若未完成则返回 404 |
+| `tasks/cancel` | “停止它” | 幂等的取消请求 |
+| `ttl` | “保留预算” | 服务器承诺保留任务状态的毫秒数 |
+| `notifications/tasks/updated` | “状态推送” | 服务器主动发起的状态变更事件 |
+| 持久化存储（Durable store） | “崩溃安全状态” | 文件系统 / SQLite / Redis 持久层 |
 
-4. Extend the store to SQLite. Durability wins are the same; query options open up (list all tasks from session X).
+## 延伸阅读
 
-5. Read the MCP roadmap post for 2026. Identify the one Tasks-related open issue most likely to affect SDK API design in the next year.
-
-## Key Terms
-
-| Term | What people say | What it actually means |
-|------|----------------|------------------------|
-| Task | "Long-running tool call" | Request augmented with `_meta.task` for async execution |
-| SEP-1686 | "Tasks spec" | Spec Evolution Proposal that added Tasks in 2025-11-25 |
-| `_meta.task` | "Task envelope" | Per-request metadata containing id, state, ttl |
-| taskSupport | "Tool flag" | `forbidden` / `optional` / `required` per tool |
-| `tasks/status` | "Poll method" | Fetch current state and optional progress hint |
-| `tasks/result` | "Fetch result" | Returns the completed payload or 404 if not yet done |
-| `tasks/cancel` | "Stop it" | Idempotent cancellation request |
-| ttl | "Retention budget" | Milliseconds the server promises to keep the task state |
-| `notifications/tasks/updated` | "State push" | Server-initiated state-change event |
-| Durable store | "Crash-safe state" | Filesystem / SQLite / Redis persistence layer |
-
-## Further Reading
-
-- [MCP — GitHub SEP-1686 issue](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1686) — the originating proposal and full discussion
-- [WorkOS — MCP async tasks for AI agent workflows](https://workos.com/blog/mcp-async-tasks-ai-agent-workflows) — design walkthrough with rationale
-- [DeepWiki — MCP task system and async operations](https://deepwiki.com/modelcontextprotocol/modelcontextprotocol/2.7-task-system-and-async-operations) — mechanics and state machine
-- [FastMCP — Tasks](https://gofastmcp.com/servers/tasks) — SDK-level task implementation patterns
-- [MCP blog — 2026 roadmap](https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/) — open issues and 2026 priorities including subtasks
+- [MCP — GitHub SEP-1686 issue](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1686) — 原始提案与完整讨论
+- [WorkOS — MCP async tasks for AI agent workflows](https://workos.com/blog/mcp-async-tasks-ai-agent-workflows) — 设计详解与原理
+- [DeepWiki — MCP task system and async operations](https://deepwiki.com/modelcontextprotocol/modelcontextprotocol/2.7-task-system-and-async-operations) — 机制与状态机
+- [FastMCP — Tasks](https://gofastmcp.com/servers/tasks) — SDK 级任务实现模式
+- [MCP blog — 2026 roadmap](https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/) — 开放问题与 2026 年优先事项，包括子任务

@@ -1,211 +1,211 @@
-# Caching, Rate Limiting & Cost Optimization
+# 缓存、速率限制与成本优化
 
-> Most AI startups do not die from bad models. They die from bad unit economics. A single GPT-4o call costs fractions of a cent. Ten thousand users making ten calls per day costs $250 in input tokens alone -- before you charge a single dollar. The companies that survive are the ones that treat every API call as a financial transaction, not a function call.
+> 大多数 AI 创业公司并非死于糟糕的模型，而是死于糟糕的单位经济。一次 GPT-4o 调用只花几分钱，但一万名用户每天调用十次，仅输入 token 就花费 250 美元——这还是在收到一分钱之前。能活下来的公司，会把每一次 API 调用都视为一笔金融交易，而不是一次函数调用。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 11 Lesson 09 (Function Calling)
-**Time:** ~45 minutes
-**Related:** Phase 11 · 15 (Prompt Caching) — this lesson covers application-layer caching (semantic cache, exact hash cache, model routing). Lesson 15 covers provider-layer prompt caching (Anthropic cache_control, OpenAI automatic, Gemini CachedContent). Combine both for 50-95% cost reduction.
+**类型：** Build
+**语言：** Python
+**前置要求：** Phase 11 Lesson 09（Function Calling）
+**时间：** ~45 分钟
+**相关：** Phase 11 · 15（Prompt Caching）—— 本课讲解应用层缓存（语义缓存、精确哈希缓存、模型路由）。第 15 课讲解提供层提示缓存（Anthropic cache_control、OpenAI automatic、Gemini CachedContent）。两者结合可降低成本 50-95%。
 
-## Learning Objectives
+## 学习目标
 
-- Implement semantic caching that serves repeated or similar queries from cache instead of making a new API call
-- Calculate per-request costs across providers and implement token-aware rate limiting and budget alerts
-- Build a cost optimization layer with prompt compression, model routing (expensive vs cheap), and response caching
-- Design a tiered caching strategy using exact match, semantic similarity, and prefix caching for different query types
+- 实现语义缓存（semantic caching），从缓存中返回重复或相似查询，而非发起新的 API 调用
+- 计算跨提供商的每次请求成本，并实现基于 token 的速率限制与预算告警
+- 使用提示压缩、模型路由（昂贵 vs 廉价）和响应缓存构建成本优化层
+- 为不同查询类型设计分层缓存策略：精确匹配、语义相似度和前缀缓存
 
-## The Problem
+## 问题
 
-You build a RAG chatbot. It works beautifully. Users love it.
+你构建了一个 RAG（检索增强生成，Retrieval-Augmented Generation）聊天机器人。效果很好。用户很喜欢。
 
-Then the invoice arrives.
+然后账单来了。
 
-GPT-5 costs $5 per million input tokens and $15 per million output. Claude Opus 4.7 costs $15 input / $75 output. Gemini 3 Pro costs $1.25 input / $5 output. GPT-5-mini is $0.25/$2. Prices below are illustrative; always check the provider's current pricing page.
+GPT-5 输入为每百万 token 5 美元，输出为 15 美元。Claude Opus 4.7 为 15/75。Gemini 3 Pro 为 1.25/5。GPT-5-mini 为 0.25/2。以下价格仅供参考；请以提供商当前定价页面为准。
 
-Here is the math that kills startups:
+这是扼杀初创公司的算式：
 
-- 10,000 daily active users
-- 10 queries per user per day
-- 1,000 input tokens per query (system prompt + context + user message)
-- 500 output tokens per response
+- 10,000 名日活用户
+- 每位用户每天 10 次查询
+- 每次查询 1,000 输入 token（系统提示 + 上下文 + 用户消息）
+- 每次响应 500 输出 token
 
-**Daily input cost:** 10,000 x 10 x 1,000 / 1,000,000 x $2.50 = **$250/day**
-**Daily output cost:** 10,000 x 10 x 500 / 1,000,000 x $10.00 = **$500/day**
-**Monthly total:** **$22,500/month**
+**每日输入成本：** 10,000 x 10 x 1,000 / 1,000,000 x $2.50 = **$250/天**
+**每日输出成本：** 10,000 x 10 x 500 / 1,000,000 x $10.00 = **$500/天**
+**每月总计：** **$22,500/月**
 
-That is just the LLM. Add embeddings, vector database hosting, infrastructure. You are looking at $30,000/month for a chatbot.
+这还只是大语言模型（LLM）的成本。再加上嵌入（embedding）、向量数据库存储、基础设施，一个聊天机器人每月要花掉 30,000 美元。
 
-The brutal part: 40-60% of those queries are near-duplicates. Users ask the same questions in slightly different words. Your system prompt -- identical across every request -- gets billed every single time. Context documents retrieved by RAG repeat across users who ask about the same topic.
+更残酷的是：这些查询中有 40-60% 是近似重复的。用户用 slightly different 的措辞问同样的问题。你的系统提示在每次请求中完全相同，却每次都被计费。RAG 检索出的上下文文档，在不同用户询问同一主题时反复出现。
 
-You are paying full price for redundant computation.
+你在为冗余计算支付全价。
 
-## The Concept
+## 概念
 
-### The Cost Anatomy of an LLM Call
+### LLM 调用的成本构成（The Cost Anatomy of an LLM Call）
 
-Every API call has five cost components.
+每次 API 调用包含五个成本组成部分。
 
 ```mermaid
 graph LR
-    A[User Query] --> B[System Prompt<br/>500-2000 tokens]
-    A --> C[Retrieved Context<br/>500-4000 tokens]
-    A --> D[User Message<br/>50-500 tokens]
-    B --> E[Input Cost<br/>$2.50/1M tokens]
+    A[用户查询] --> B[系统提示<br/>500-2000 tokens]
+    A --> C[检索上下文<br/>500-4000 tokens]
+    A --> D[用户消息<br/>50-500 tokens]
+    B --> E[输入成本<br/>$2.50/1M tokens]
     C --> E
     D --> E
-    E --> F[Model Processing]
-    F --> G[Output Cost<br/>$10.00/1M tokens]
+    E --> F[模型处理]
+    F --> G[输出成本<br/>$10.00/1M tokens]
 ```
 
-System prompts are the silent killer. A 1,500-token system prompt sent with every request costs $3.75 per million requests just for that prefix. At 100K requests per day, that is $375/day -- $11,250/month -- for text that never changes.
+系统提示是隐形杀手。一个 1,500 token 的系统提示随每次请求发送，仅该前缀就需为每百万请求支付 3.75 美元。按每天 10 万次请求计算，这就是 375 美元/天——11,250 美元/月——而这段文本从不改变。
 
-### Provider Caching: Built-in Discounts
+### 提供商缓存：内置折扣
 
-All three major providers offer provider-side prompt caching in 2026, but the mechanics differ. See Phase 11 · 15 for the deep dive.
+到 2026 年，三大主流提供商都提供提供层提示缓存，但机制各不相同。深入内容见 Phase 11 · 15。
 
-| Provider | Mechanism | Discount | Minimum | Cache Duration |
+| 提供商 | 机制 | 折扣 | 最低 token 数 | 缓存时长 |
 |----------|-----------|----------|---------|----------------|
-| Anthropic | Explicit cache_control markers | 90% on cache hits (pay 25% extra on write) | 1,024 tokens (Sonnet/Opus), 2,048 (Haiku) | 5 min default; 1h extended (2x write premium) |
-| OpenAI | Automatic prefix matching | 50% on cache hits | 1,024 tokens | Best-effort up to 1 hour |
-| Google Gemini | Explicit CachedContent API | ~75% reduction (plus storage) | 4,096 (Flash) / 32,768 (Pro) | User-configurable TTL |
+| Anthropic | 显式 cache_control 标记 | 缓存命中时 90% 折扣（写入时多付 25%）| 1,024 tokens（Sonnet/Opus），2,048（Haiku）| 默认 5 分钟；扩展 1 小时（写入费用 2 倍）|
+| OpenAI | 自动前缀匹配 | 缓存命中时 50% 折扣 | 1,024 tokens | 尽力而为，最长 1 小时 |
+| Google Gemini | 显式 CachedContent API | 约 75% 折扣（另加存储费）| 4,096（Flash）/ 32,768（Pro）| 用户可配置 TTL |
 
-**Anthropic's approach** is explicit. You mark sections of your prompt with `cache_control: {"type": "ephemeral"}`. The first request pays a 25% write premium. Subsequent requests with the same prefix get a 90% discount. A 2,000-token system prompt that costs $0.005 normally costs $0.000625 on cache hits. Over 100K requests, that saves $437.50/day.
+**Anthropic 的方案**是显式的。你用 `cache_control: {"type": "ephemeral"}` 标记提示中的某些部分。第一次请求支付 25% 的写入溢价，后续具有相同前缀的请求获得 90% 折扣。一个正常成本 $0.005 的 2,000 token 系统提示，在缓存命中时仅需 $0.000625。按 10 万次请求计算，每天可节省 $437.50。
 
-**OpenAI's approach** is automatic. Any prompt prefix that matches a previous request gets a 50% discount. No markers needed. The tradeoff: less discount, less control, but zero implementation effort.
+**OpenAI 的方案**是自动的。任何与之前请求匹配的前缀都获得 50% 折扣，无需标记。权衡：折扣更低、控制力更弱，但零实现成本。
 
-### Semantic Caching: Your Custom Layer
+### 语义缓存：你的自定义层
 
-Provider caching only works for identical prefixes. Semantic caching handles the harder case: different queries with the same meaning.
+提供商缓存只对相同前缀有效。语义缓存处理更难的情况：语义相同但表述不同的查询。
 
-"What is the return policy?" and "How do I return an item?" are different strings but identical intent. A semantic cache embeds both queries, computes cosine similarity, and returns the cached response if similarity exceeds a threshold (typically 0.92-0.95).
+"What is the return policy?" 和 "How do I return an item?" 是不同字符串，但意图相同。语义缓存将两个查询嵌入（embed），计算余弦相似度（cosine similarity），如果相似度超过阈值（通常为 0.92–0.95）则返回缓存响应。
 
 ```mermaid
 flowchart TD
-    A[User Query] --> B[Embed Query]
-    B --> C{Similar query<br/>in cache?}
-    C -->|sim > 0.95| D[Return Cached Response]
-    C -->|sim < 0.95| E[Call LLM API]
-    E --> F[Cache Response<br/>with Embedding]
-    F --> G[Return Response]
+    A[用户查询] --> B[嵌入查询]
+    B --> C{缓存中有<br/>相似查询？}
+    C -->|sim > 0.95| D[返回缓存响应]
+    C -->|sim < 0.95| E[调用 LLM API]
+    E --> F[缓存响应<br/>及嵌入]
+    F --> G[返回响应]
     D --> G
 ```
 
-The embedding costs are negligible. OpenAI's text-embedding-3-small costs $0.02 per million tokens. Checking the cache costs almost nothing compared to a full LLM call.
+嵌入成本可忽略不计。OpenAI 的 text-embedding-3-small 每百万 token 仅 $0.02。检查缓存的成本与完整 LLM 调用相比几乎为零。
 
-### Exact Caching: Hash and Match
+### 精确缓存：哈希匹配
 
-For deterministic calls (temperature=0, same model, same prompt), exact caching is simpler and faster. Hash the full prompt, check the cache, return if found.
+对于确定性调用（temperature=0、同一模型、同一提示），精确缓存更简单、更快。对完整提示做哈希，检查缓存，命中即返回。
 
-This works perfectly for:
-- System prompt + fixed context + identical user queries
-- Function calling with identical tool definitions
-- Batch processing where the same document gets processed multiple times
+这非常适用于：
+- 系统提示 + 固定上下文 + 完全相同的用户查询
+- 工具定义完全相同的函数调用
+- 同一文档被多次处理的批处理任务
 
-### Rate Limiting: Protecting Your Budget
+### 速率限制：保护预算
 
-Rate limiting is not just about fairness. It is about survival.
+速率限制不仅关乎公平，更关乎生存。
 
-**Token bucket algorithm:** each user gets a bucket of N tokens that refills at rate R per second. A request consumes tokens from the bucket. If the bucket is empty, the request is rejected. This allows bursts (use the full bucket at once) while enforcing an average rate.
+**令牌桶（token bucket）算法：** 每个用户拥有一个容量为 N 的令牌桶，以每秒 R 个的速度补充。请求从桶中消耗令牌。桶空则拒绝请求。这允许突发（一次性用完 N 个），同时限制平均速率。
 
-**Per-user quotas:** set daily/monthly token limits per user tier.
+**每用户配额：** 为不同用户层级设置每日/每月 token 上限。
 
-| Tier | Daily Token Limit | Max Requests/min | Model Access |
+| 层级 | 每日 Token 上限 | 最大请求数/分钟 | 模型访问权限 |
 |------|------------------|------------------|-------------|
-| Free | 50,000 | 10 | GPT-4o-mini only |
-| Pro | 500,000 | 60 | GPT-4o, Claude Sonnet |
-| Enterprise | 5,000,000 | 300 | All models |
+| Free | 50,000 | 10 | 仅 GPT-4o-mini |
+| Pro | 500,000 | 60 | GPT-4o、Claude Sonnet |
+| Enterprise | 5,000,000 | 300 | 所有模型 |
 
-### Model Routing: Right Model for the Right Job
+### 模型路由：为合适的工作选择合适模型
 
-Not every query needs GPT-4o.
+并非每个查询都需要 GPT-4o。
 
-"What time does the store close?" does not require a $10/M-output model. GPT-4o-mini at $0.60/M output handles it perfectly. Claude Haiku at $1.25/M output handles it. A simple classifier routes cheap queries to cheap models and complex queries to expensive models.
+"What time does the store close?" 不需要每百万输出 token 10 美元的模型。GPT-4o-mini 每百万输出 $0.60 就能完美处理。Claude Haiku 每百万 $1.25 也能处理。一个简单的分类器将廉价查询路由到廉价模型，复杂查询路由到昂贵模型。
 
 ```mermaid
 flowchart TD
-    A[User Query] --> B[Complexity Classifier]
-    B -->|Simple: lookup, FAQ| C[GPT-4o-mini<br/>$0.15/$0.60 per 1M]
-    B -->|Medium: analysis, summary| D[Claude Sonnet<br/>$3.00/$15.00 per 1M]
-    B -->|Complex: reasoning, code| E[GPT-4o / Claude Opus<br/>$2.50/$10.00+]
+    A[用户查询] --> B[复杂度分类器]
+    B -->|简单：查询、FAQ| C[GPT-4o-mini<br/>$0.15/$0.60 per 1M]
+    B -->|中等：分析、摘要| D[Claude Sonnet<br/>$3.00/$15.00 per 1M]
+    B -->|复杂：推理、代码| E[GPT-4o / Claude Opus<br/>$2.50/$10.00+]
 ```
 
-A well-tuned router saves 40-70% on model costs alone.
+一个调优良好的路由器仅模型成本就能节省 40-70%。
 
-### Cost Tracking: Know Where the Money Goes
+### 成本追踪：了解钱花在哪
 
-You cannot optimize what you do not measure. Log every API call with:
+你无法优化无法度量的事物。记录每次 API 调用，包括：
 
-- Timestamp
-- Model name
-- Input tokens
-- Output tokens
-- Latency (ms)
-- Computed cost ($)
-- User ID
-- Cache hit/miss
-- Request category
+- 时间戳
+- 模型名称
+- 输入 token 数
+- 输出 token 数
+- 延迟（毫秒）
+- 计算成本（$）
+- 用户 ID
+- 缓存命中/未命中
+- 请求类别
 
-This data reveals which features are expensive, which users are heavy consumers, and where caching has the most impact.
+这些数据能揭示哪些功能昂贵、哪些用户是重度消费者、以及缓存影响最大的地方。
 
-### Batching: Bulk Discounts
+### 批处理：批量折扣
 
-OpenAI's Batch API processes requests asynchronously at a 50% discount. You submit a batch of up to 50,000 requests, and results come back within 24 hours.
+OpenAI 的 Batch API 以 50% 折扣异步处理请求。你最多可提交 50,000 条请求，结果在 24 小时内返回。
 
-Use batching for:
-- Nightly document processing
-- Bulk classification
-- Evaluation runs
-- Data enrichment pipelines
+批处理适用于：
+- 夜间文档处理
+- 批量分类
+- 评估运行
+- 数据增强流水线
 
-Not for: real-time user-facing queries (latency matters).
+不适用于：实时面向用户的查询（延迟敏感）。
 
-### Budget Alerts and Circuit Breakers
+### 预算告警与熔断器（Circuit Breaker）
 
-A circuit breaker stops spending when you hit a limit. Without one, a bug or abuse can burn through your monthly budget in hours.
+熔断器（circuit breaker）在达到限额时停止消费。没有它，一个 bug 或滥用可能在几小时内烧光整月预算。
 
-Set three thresholds:
-1. **Warning** (70% of budget): send an alert
-2. **Throttle** (85% of budget): switch to cheaper models only
-3. **Stop** (95% of budget): reject new requests, return cached responses only
+设置三个阈值：
+1. **告警**（预算的 70%）：发送告警
+2. **限流**（预算的 85%）：仅切换到更便宜的模型
+3. **停止**（预算的 95%）：拒绝新请求，仅返回缓存响应
 
-### The Optimization Stack
+### 优化技术栈
 
-Apply these techniques in order. Each layer compounds on the previous ones.
+按顺序应用这些技术，每一层都在前一层基础上叠加收益。
 
-| Layer | Technique | Typical Savings | Implementation Effort |
+| 层级 | 技术 | 典型节省 | 实现工作量 |
 |-------|-----------|----------------|----------------------|
-| 1 | Provider prompt caching | 30-50% | Low (add cache markers) |
-| 2 | Exact caching | 10-20% | Low (hash + dict) |
-| 3 | Semantic caching | 15-30% | Medium (embeddings + similarity) |
-| 4 | Model routing | 40-70% | Medium (classifier) |
-| 5 | Rate limiting | Budget protection | Low (token bucket) |
-| 6 | Prompt compression | 10-30% | Medium (rewrite prompts) |
-| 7 | Batching | 50% on eligible | Low (batch API) |
+| 1 | 提供商提示缓存 | 30-50% | 低（添加缓存标记）|
+| 2 | 精确缓存 | 10-20% | 低（哈希 + 字典）|
+| 3 | 语义缓存 | 15-30% | 中（嵌入 + 相似度）|
+| 4 | 模型路由 | 40-70% | 中（分类器）|
+| 5 | 速率限制 | 预算保护 | 低（令牌桶）|
+| 6 | 提示压缩 | 10-30% | 中（重写提示）|
+| 7 | 批处理 | 符合条件的 50% | 低（Batch API）|
 
-A RAG app applying layers 1-5 typically reduces costs from $22,500/month to $4,000-6,000/month. That is the difference between burning runway and building a business.
+一个应用了 1-5 层的 RAG 应用通常可将成本从每月 $22,500 降至 $4,000-6,000。这就是烧 runway 与建立业务之间的区别。
 
-### Real Savings: Before and After
+### 真实节省：优化前后
 
-Here is a real breakdown for a RAG chatbot serving 10,000 DAU.
+下面是一个服务 10,000 日活用户的 RAG 聊天机器人的真实拆分。
 
-| Metric | Before Optimization | After Optimization | Savings |
+| 指标 | 优化前 | 优化后 | 节省 |
 |--------|--------------------|--------------------|---------|
-| Monthly LLM cost | $22,500 | $5,200 | 77% |
-| Avg cost per query | $0.0075 | $0.0017 | 77% |
-| Cache hit rate | 0% | 52% | -- |
-| Queries routed to mini | 0% | 65% | -- |
-| P95 latency | 2,800ms | 900ms (cache hits: 50ms) | 68% |
-| Monthly embedding cost | $0 | $180 | (new cost) |
-| Total monthly cost | $22,500 | $5,380 | 76% |
+| 每月 LLM 成本 | $22,500 | $5,200 | 77% |
+| 每次查询平均成本 | $0.0075 | $0.0017 | 77% |
+| 缓存命中率 | 0% | 52% | -- |
+| 路由到 mini 的查询比例 | 0% | 65% | -- |
+| P95 延迟 | 2,800ms | 900ms（缓存命中：50ms）| 68% |
+| 每月嵌入成本 | $0 | $180 | （新增成本）|
+| 每月总成本 | $22,500 | $5,380 | 76% |
 
-The embedding cost for semantic caching ($180/month) pays for itself within the first hour of cache hits.
+语义缓存的嵌入成本（每月 $180）在缓存命中的第一小时内就能回本。
 
-## Build It
+## 动手实现
 
-### Step 1: Cost Calculator
+### 步骤 1：成本计算器
 
-Build a token cost calculator that knows current pricing for major models.
+构建一个 token 成本计算器，了解主流模型的当前定价。
 
 ```python
 import hashlib
@@ -253,9 +253,9 @@ def calculate_cost(model, input_tokens, output_tokens, cached_input_tokens=0):
     }
 ```
 
-### Step 2: Exact Cache
+### 步骤 2：精确缓存
 
-Hash the full prompt and return cached responses for identical requests.
+对完整提示做哈希，为完全相同的请求返回缓存响应。
 
 ```python
 class ExactCache:
@@ -308,9 +308,9 @@ class ExactCache:
         }
 ```
 
-### Step 3: Semantic Cache
+### 步骤 3：语义缓存
 
-Embed queries and return cached responses when similarity exceeds a threshold.
+嵌入查询，当相似度超过阈值时返回缓存响应。
 
 ```python
 def simple_embed(text):
@@ -382,9 +382,9 @@ class SemanticCache:
         }
 ```
 
-### Step 4: Rate Limiter
+### 步骤 4：速率限制器
 
-Token bucket rate limiter with per-user quotas.
+基于令牌桶的速率限制器，附带每用户配额。
 
 ```python
 class TokenBucketRateLimiter:
@@ -452,9 +452,9 @@ class TokenBucketRateLimiter:
         }
 ```
 
-### Step 5: Cost Tracker
+### 步骤 5：成本追踪器
 
-Log every call and compute running totals.
+记录每次调用并计算累计总额。
 
 ```python
 class CostTracker:
@@ -534,9 +534,9 @@ class CostTracker:
         }
 ```
 
-### Step 6: Model Router
+### 步骤 6：模型路由器
 
-Route queries to the cheapest model that can handle them.
+将查询路由到能处理它的最便宜模型。
 
 ```python
 SIMPLE_KEYWORDS = ["what time", "hours", "address", "phone", "price", "return policy", "hello", "hi", "thanks", "yes", "no"]
@@ -563,7 +563,7 @@ def route_model(query, tier="pro"):
     return {"query": query, "complexity": complexity, "model": model, "tier": tier}
 ```
 
-### Step 7: Run the Demo
+### 步骤 7：运行演示
 
 ```python
 def simulate_llm_call(model, query):
@@ -748,9 +748,9 @@ if __name__ == "__main__":
     run_demo()
 ```
 
-## Use It
+## 应用
 
-### Anthropic Prompt Caching
+### Anthropic 提示缓存
 
 ```python
 # import anthropic
@@ -775,9 +775,9 @@ if __name__ == "__main__":
 # print(f"Cache read tokens: {response.usage.cache_read_input_tokens}")
 ```
 
-The first call writes to the cache (25% premium). Every subsequent call with the same system prompt prefix reads from the cache (90% discount). The cache lasts 5 minutes and resets the timer on every hit.
+第一次调用写入缓存（25% 溢价）。后续具有相同系统提示前缀的调用从缓存读取（90% 折扣）。缓存持续 5 分钟，每次命中都会重置计时器。
 
-### OpenAI Automatic Caching
+### OpenAI 自动缓存
 
 ```python
 # from openai import OpenAI
@@ -797,7 +797,7 @@ The first call writes to the cache (25% premium). Every subsequent call with the
 # print(f"Completion tokens: {response.usage.completion_tokens}")
 ```
 
-OpenAI caches automatically. Any prompt prefix of 1,024+ tokens that matches a recent request gets a 50% discount. No code changes needed -- just check `prompt_tokens_details.cached_tokens` in the response to verify it is working.
+OpenAI 自动缓存。任何 1,024 token 以上的提示前缀若与近期请求匹配，即可获得 50% 折扣。无需修改代码——只需检查响应中的 `prompt_tokens_details.cached_tokens` 即可确认生效。
 
 ### OpenAI Batch API
 
@@ -828,9 +828,9 @@ OpenAI caches automatically. Any prompt prefix of 1,024+ tokens that matches a r
 # print(f"Batch ID: {batch.id}, Status: {batch.status}")
 ```
 
-Batch API gives a flat 50% discount on all tokens. Results arrive within 24 hours. Perfect for non-real-time workloads: evaluations, data labeling, bulk summarization.
+Batch API 对所有 token 提供固定 50% 折扣。结果在 24 小时内返回。完美适用于非实时工作负载：评估、数据标注、批量摘要。
 
-### Production Semantic Cache with Redis
+### 使用 Redis 的生产级语义缓存
 
 ```python
 # import redis
@@ -859,50 +859,50 @@ Batch API gives a flat 50% discount on all tokens. Results arrive within 24 hour
 #     return None
 ```
 
-In production, replace the linear scan with a vector index (Redis Vector Search, Pinecone, or pgvector). Linear scan works for <1,000 entries. Beyond that, use ANN (approximate nearest neighbor) for O(log n) lookup.
+在生产环境中，将线性扫描替换为向量索引（Redis Vector Search、Pinecone 或 pgvector）。线性扫描适用于少于 1,000 条记录。超出后，请使用 ANN（approximate nearest neighbor）实现 O(log n) 查找。
 
-## Ship It
+## 交付
 
-This lesson produces `outputs/prompt-cost-optimizer.md` -- a reusable prompt that analyzes your LLM application and recommends specific cost optimizations with projected savings.
+本课生成 `outputs/prompt-cost-optimizer.md` —— 一份可复用的提示，用于分析你的 LLM 应用并推荐具体的成本优化方案及预期节省。
 
-It also produces `outputs/skill-cost-patterns.md` -- a decision framework for choosing the right caching strategy, rate limiting configuration, and model routing rules for your use case.
+同时生成 `outputs/skill-cost-patterns.md` —— 为你的用例选择正确缓存策略、速率限制配置和模型路由规则的决策框架。
 
-## Exercises
+## 练习
 
-1. **Implement LRU eviction for the semantic cache.** Replace the oldest-first eviction with least-recently-used. Track the last access time for each entry and evict the entry with the oldest access time when the cache is full. Compare hit rates between the two strategies over 100 queries.
+1. **为语义缓存实现 LRU 淘汰策略。** 将“最旧优先”淘汰替换为“最近最少使用（LRU）”。记录每个条目的最后访问时间，缓存满时淘汰最久未访问的条目。对比两种策略在 100 次查询上的命中率。
 
-2. **Build a cost projection tool.** Given a log of API calls (the CostTracker logs), project the monthly cost based on the trailing 7-day average. Account for weekday/weekend patterns. Trigger an alert if the projected monthly cost exceeds the budget by more than 20%.
+2. **构建成本预测工具。** 给定 API 调用日志（即 CostTracker 日志），基于过去 7 天平均值预测月度成本。考虑工作日/周末模式。如果预测月度成本超出预算 20% 以上，则触发告警。
 
-3. **Implement tiered semantic caching.** Use two similarity thresholds: 0.98 for high-confidence hits (return immediately) and 0.90 for medium-confidence hits (return with a disclaimer: "Based on a similar previous question..."). Track which tier each hit came from and measure user satisfaction differences.
+3. **实现分层语义缓存。** 使用两个相似度阈值：0.98 用于高置信度命中（立即返回），0.90 用于中等置信度命中（返回时附加免责声明：“基于之前一个相似的问题……”）。追踪每次命中来自哪个层级，并衡量用户满意度差异。
 
-4. **Build a model routing classifier.** Replace the keyword-based classifier with an embedding-based one. Embed 50 labeled queries (simple/medium/complex), then classify new queries by finding the nearest labeled example. Measure classification accuracy against a test set of 20 queries.
+4. **构建模型路由分类器。** 将基于关键词的分类器替换为基于嵌入的分类器。嵌入 50 条带标签的查询（简单/中等/复杂），然后通过寻找最近的带标签样本来分类新查询。在 20 条查询的测试集上衡量分类准确率。
 
-5. **Implement a circuit breaker with degradation levels.** At 70% budget, log a warning. At 85%, automatically switch all routing to the cheapest model (gpt-4o-mini). At 95%, serve only cached responses and reject new queries. Test by simulating 1,000 requests against a $1.00 budget and verify each threshold triggers correctly.
+5. **实现带降级级别的熔断器。** 预算达到 70% 时记录告警；85% 时自动将所有路由切换到最便宜的模型（gpt-4o-mini）；95% 时仅提供缓存响应并拒绝新查询。通过模拟 1,000 次请求、预算 $1.00，验证每个阈值是否正确触发。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
+| 术语 | 人们常说 | 实际含义 |
 |------|----------------|----------------------|
-| Prompt caching | "Cache the system prompt" | Provider-level caching where repeated prompt prefixes get a discount (90% Anthropic, 50% OpenAI) -- no code changes for OpenAI, explicit markers for Anthropic |
-| Semantic caching | "Smart caching" | Embedding the query, computing similarity to past queries, and returning the cached response if similarity exceeds a threshold -- catches paraphrases that exact matching misses |
-| Exact caching | "Hash caching" | Hashing the full prompt (model + messages + temperature) and returning the cached response for identical inputs -- only works for temperature=0 deterministic calls |
-| Token bucket | "Rate limiter" | An algorithm where each user has a bucket of N tokens that refills at rate R per second -- allows bursts up to N while enforcing an average rate of R |
-| Model routing | "Cheapskate routing" | Using a classifier to send simple queries to cheap models (GPT-4o-mini, Haiku) and complex queries to expensive models (GPT-4o, Opus) -- saves 40-70% on model costs |
-| Cost tracking | "Metering" | Logging every API call with model, tokens, latency, cost, and user ID so you know exactly where money goes and which features are expensive |
-| Circuit breaker | "Kill switch" | Automatically degrading service (cheaper models, cached-only) or stopping requests entirely when spending approaches the budget limit |
-| Batch API | "Bulk discount" | OpenAI's asynchronous processing at 50% discount -- submit up to 50,000 requests, get results within 24 hours |
-| Prompt compression | "Token diet" | Rewriting system prompts and context to use fewer tokens while preserving meaning -- shorter prompts cost less and often perform better |
-| Cache hit rate | "Cache efficiency" | The percentage of requests served from cache instead of calling the LLM -- 40-60% is typical for production chatbots, saves proportionally on cost |
+| 提示缓存（prompt caching）| "Cache the system prompt" | 提供层缓存，重复的提示前缀可获得折扣（Anthropic 90%，OpenAI 50%）—— OpenAI 无需修改代码，Anthropic 需要显式标记 |
+| 语义缓存（semantic caching）| "Smart caching" | 将查询嵌入，计算与历史查询的相似度，超过阈值即返回缓存响应 —— 能捕获精确匹配漏掉的同义改写 |
+| 精确缓存（exact caching）| "Hash caching" | 对完整提示（模型 + 消息 + temperature）做哈希，完全相同输入时返回缓存响应 —— 仅适用于 temperature=0 的确定性调用 |
+| 令牌桶（token bucket）| "Rate limiter" | 每个用户拥有容量为 N 的令牌桶，以每秒 R 个的速度补充 —— 允许最多 N 的突发，同时限制平均速率为 R |
+| 模型路由（model routing）| "Cheapskate routing" | 使用分类器将简单查询发送到廉价模型（GPT-4o-mini、Haiku），复杂查询发送到昂贵模型（GPT-4o、Opus）—— 可节省 40-70% 的模型成本 |
+| 成本追踪（cost tracking）| "Metering" | 记录每次 API 调用的模型、token、延迟、成本和用户 ID，让你确切知道钱花在哪里、哪些功能昂贵 |
+| 熔断器（circuit breaker）| "Kill switch" | 当支出接近预算限额时自动降级服务（更便宜模型、仅缓存）或完全停止请求 |
+| Batch API | "Bulk discount" | OpenAI 的异步处理，50% 折扣 —— 最多提交 50,000 条请求，24 小时内返回结果 |
+| 提示压缩（prompt compression）| "Token diet" | 在保持语义的前提下重写系统提示和上下文以减少 token 数 —— 更短的提示成本更低，且通常表现更好 |
+| 缓存命中率（cache hit rate）| "Cache efficiency" | 从缓存而非 LLM  serving 的请求百分比 —— 生产聊天机器人通常为 40-60%，节省比例与命中率成正比 |
 
-## Further Reading
+## 延伸阅读
 
-- [Anthropic Prompt Caching Guide](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) -- the official docs for Anthropic's explicit cache_control markers, pricing, and cache lifetime behavior
-- [OpenAI Prompt Caching](https://platform.openai.com/docs/guides/prompt-caching) -- OpenAI's automatic caching, how to verify cache hits via usage fields, and minimum prefix lengths
-- [OpenAI Batch API](https://platform.openai.com/docs/guides/batch) -- 50% discount for asynchronous processing, JSONL format, 24-hour completion window, and 50K request limits
-- [GPTCache](https://github.com/zilliztech/GPTCache) -- open-source semantic caching library supporting multiple embedding backends, vector stores, and eviction policies
-- [Martian Model Router](https://docs.withmartian.com) -- production model routing that automatically selects the cheapest model capable of handling each query
-- [Not Diamond](https://www.notdiamond.ai) -- ML-based model router that learns from your traffic patterns to optimize cost/quality tradeoffs across providers
-- [Helicone](https://www.helicone.ai) -- LLM observability platform with cost tracking, caching, rate limiting, and budget alerts as a proxy layer
-- [Dean & Barroso, "The Tail at Scale" (CACM 2013)](https://research.google/pubs/the-tail-at-scale/) -- latency, throughput, TTFT/TPOT percentiles, and hedged requests; the cost model behind "pick the cheapest model that still meets P95."
-- [Kwon et al., "Efficient Memory Management for Large Language Model Serving with PagedAttention" (SOSP 2023)](https://arxiv.org/abs/2309.06180) -- the vLLM paper; why paged KV-cache + continuous batching beat naive servers 24× on throughput, the infra layer under "caching and cost."
-- [Dao et al., "FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning" (ICLR 2024)](https://arxiv.org/abs/2307.08691) -- kernel-level cost reduction orthogonal to prompt caching; read alongside speculative decoding and GQA for the full cost-curve picture.
+- [Anthropic Prompt Caching Guide](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) —— Anthropic 显式 cache_control 标记、定价和缓存生命周期行为的官方文档
+- [OpenAI Prompt Caching](https://platform.openai.com/docs/guides/prompt-caching) —— OpenAI 自动缓存、如何通过 usage 字段验证缓存命中，以及最小前缀长度
+- [OpenAI Batch API](https://platform.openai.com/docs/guides/batch) —— 异步处理 50% 折扣、JSONL 格式、24 小时完成窗口和 50K 请求限制
+- [GPTCache](https://github.com/zilliztech/GPTCache) —— 开源语义缓存库，支持多种嵌入后端、向量存储和淘汰策略
+- [Martian Model Router](https://docs.withmartian.com) —— 生产级模型路由器，自动选择能处理每个查询的最便宜模型
+- [Not Diamond](https://www.notdiamond.ai) —— 基于机器学习的模型路由器，从你的流量模式中学习，以优化跨提供商的成本/质量权衡
+- [Helicone](https://www.helicone.ai) —— LLM 可观测性平台，以代理层形式提供成本追踪、缓存、速率限制和预算告警
+- [Dean & Barroso, "The Tail at Scale" (CACM 2013)](https://research.google/pubs/the-tail-at-scale/) —— 延迟、吞吐量、TTFT/TPOT 百分位数与对冲请求；支撑“选能满足 P95 的最便宜模型”的成本模型
+- [Kwon et al., "Efficient Memory Management for Large Language Model Serving with PagedAttention" (SOSP 2023)](https://arxiv.org/abs/2309.06180) —— vLLM 论文；分页 KV 缓存 + 连续批处理为何在吞吐量上击败朴素服务器 24 倍，即“缓存与成本”的基础设施层
+- [Dao et al., "FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning" (ICLR 2024)](https://arxiv.org/abs/2307.08691) —— 与提示缓存正交的核级成本降低；与推测解码（speculative decoding）和 GQA 一起阅读，可得到完整成本曲线图景

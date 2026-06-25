@@ -1,30 +1,30 @@
-# Building an MCP Server — Python + TypeScript SDKs
+# 构建 MCP 服务器 —— Python + TypeScript SDK
 
-> Most MCP tutorials show only stdio hello-worlds. A real server exposes tools plus resources plus prompts, handles capability negotiation, emits structured errors, and works the same across SDKs. This lesson builds a notes server end-to-end: stdlib stdio transport, JSON-RPC dispatch, the three server primitives, and a pure-function style that drops into either the Python SDK's FastMCP or the TypeScript SDK when you graduate.
+> 大多数 MCP 教程只展示 stdio 的 hello-world。真正的服务器会暴露工具、资源和提示，处理能力协商，发出结构化错误，并且跨 SDK 表现一致。本节课从头构建一个 notes 服务器：stdlib stdio 传输、JSON-RPC 分发、三种服务器原语，以及一种纯函数风格，让你在进阶时可以无缝迁移到 Python SDK 的 FastMCP 或 TypeScript SDK。
 
-**Type:** Build
-**Languages:** Python (stdlib, stdio MCP server)
-**Prerequisites:** Phase 13 · 06 (MCP fundamentals)
-**Time:** ~75 minutes
+**类型：** 构建  
+**语言：** Python（标准库，stdio MCP 服务器）  
+**前置知识：** Phase 13 · 06（MCP 基础）  
+**时间：** 约 75 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Implement `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, and `prompts/get` methods.
-- Write a dispatch loop that reads JSON-RPC messages from stdin and writes responses to stdout.
-- Emit structured error responses per the JSON-RPC 2.0 spec and MCP's additional codes.
-- Graduate a stdlib implementation to FastMCP (Python SDK) or the TypeScript SDK without rewriting tool logic.
+- 实现 `initialize`、`tools/list`、`tools/call`、`resources/list`、`resources/read`、`prompts/list` 和 `prompts/get` 方法。
+- 编写一个分发循环，从 stdin 读取 JSON-RPC 消息并将响应写入 stdout。
+- 按照 JSON-RPC 2.0 规范和 MCP 的附加错误码发出结构化错误响应。
+- 将标准库实现迁移到 FastMCP（Python SDK）或 TypeScript SDK，而无需重写工具逻辑。
 
-## The Problem
+## 问题背景
 
-Before you can use a remote transport (Phase 13 · 09) or an auth layer (Phase 13 · 16), you need a clean local server. Local means stdio: the server is spawned by the client as a child process, messages flow over stdin/stdout newline-delimited.
+在你使用远程传输（Phase 13 · 09）或认证层（Phase 13 · 16）之前，你需要一个干净的本地服务器。本地即 stdio：服务器由客户端作为子进程启动，消息通过换行分隔的 stdin/stdout 流动。
 
-The 2025-11-25 spec prescribes that stdio messages are encoded as JSON objects with an explicit `\n` separator. No SSE here; SSE was the old remote mode and is being removed in mid-2026 (Atlassian's Rovo MCP server deprecated it on June 30, 2026; Keboola on April 1, 2026). For stdio, one JSON object per line is the whole wire format.
+2025-11-25 规范规定，stdio 消息编码为显式以 `\n` 分隔的 JSON 对象。这里不使用 SSE；SSE 是旧的远程模式，并将在 2026 年中期被移除（Atlassian 的 Rovo MCP 服务器已于 2026 年 6 月 30 日弃用；Keboola 于 2026 年 4 月 1 日弃用）。对于 stdio，每行一个 JSON 对象就是全部的线格式。
 
-A notes server is a good shape because it exercises all three server primitives. Tools do mutations (`notes_create`). Resources expose data (`notes://{id}`). Prompts ship templates (`review_note`). The shape of this lesson generalizes to any domain.
+notes 服务器是一个良好的示例，因为它锻炼了全部三种服务器原语。工具执行变更（`notes_create`）。资源暴露数据（`notes://{id}`）。提示提供模板（`review_note`）。本节课的结构可推广到任何领域。
 
-## The Concept
+## 核心概念
 
-### Dispatch loop
+### 分发循环
 
 ```
 loop:
@@ -36,13 +36,13 @@ loop:
     handle notification -> no response
 ```
 
-Three rules:
+三条规则：
 
-- Do not print anything to stdout that is not a JSON-RPC envelope. Debug logs go to stderr.
-- Every request MUST be matched with a response carrying the same `id`.
-- Notifications MUST NOT be responded to.
+- 不要向 stdout 打印任何非 JSON-RPC 信封的内容。调试日志应输出到 stderr。
+- 每个请求都必须以携带相同 `id` 的响应匹配。
+- 通知不得响应。
 
-### Implementing `initialize`
+### 实现 `initialize`
 
 ```python
 def initialize(params):
@@ -57,13 +57,13 @@ def initialize(params):
     }
 ```
 
-Declare only what you support. The client relies on the capability set to gate features.
+只声明你支持的能力。客户端依赖能力集合来控制功能。
 
-### Implementing `tools/list` and `tools/call`
+### 实现 `tools/list` 和 `tools/call`
 
-`tools/list` returns `{tools: [...]}` with each entry having `name`, `description`, `inputSchema`. `tools/call` takes `{name, arguments}` and returns `{content: [blocks], isError: bool}`.
+`tools/list` 返回 `{tools: [...]}`，每个条目包含 `name`、`description`、`inputSchema`。`tools/call` 接收 `{name, arguments}` 并返回 `{content: [blocks], isError: bool}`。
 
-Content blocks are typed. The most common:
+内容块（content block）是带类型的。最常见的：
 
 ```json
 {"type": "text", "text": "Found 2 notes"}
@@ -71,43 +71,43 @@ Content blocks are typed. The most common:
 {"type": "image", "data": "<base64>", "mimeType": "image/png"}
 ```
 
-Tool errors come in two shapes. Protocol-level errors (unknown method, bad params) are JSON-RPC errors. Tool-level errors (valid call but the tool failed) are returned as `{content: [...], isError: true}`. That lets the model see the failure in its context.
+工具错误有两种形态。协议级错误（未知方法、参数错误）属于 JSON-RPC 错误。工具级错误（调用有效但工具执行失败）以 `{content: [...], isError: true}` 返回。这让模型能在上下文中看到失败。
 
-### Implementing resources
+### 实现资源
 
-Resources are read-only by design. `resources/list` returns a manifest; `resources/read` returns the content. URIs can be `file://...`, `http://...`, or a custom scheme like `notes://`.
+资源按设计是只读的。`resources/list` 返回清单；`resources/read` 返回内容。URI 可以是 `file://...`、`http://...` 或自定义方案如 `notes://`。
 
-When you expose data as a resource instead of a tool:
+当你将数据作为资源暴露而非工具时：
 
-- The model does not "call" it; the client can inject it into context on user request.
-- Subscriptions let the server push updates when the resource changes (Phase 13 · 10).
-- Phase 13 · 14 extends this with `ui://` for interactive resources.
+- 模型不会“调用”它；客户端可在用户请求时将其注入上下文。
+- 订阅（subscription）让服务器在资源变化时推送更新（Phase 13 · 10）。
+- Phase 13 · 14 用 `ui://` 扩展为交互式资源。
 
-### Implementing prompts
+### 实现提示
 
-Prompts are templates with named arguments. The host surfaces them as slash-commands. A `review_note` prompt might take a `note_id` argument and produce a multi-message prompt template the client feeds to its model.
+提示（prompt）是带命名参数的模板。宿主将其展示为斜杠命令。`review_note` 提示可能接收 `note_id` 参数，并生成一个多消息提示模板，客户端将其喂给自己的模型。
 
-### Stdio transport subtleties
+### Stdio 传输细节
 
-- Newline-delimited JSON. No length-prefixed framing.
-- Do not buffer. `sys.stdout.flush()` after each write.
-- The client controls the lifetime. When stdin closes (EOF), exit cleanly.
-- Do not handle SIGPIPE silently; log and exit.
+- 换行分隔的 JSON。无长度前缀分帧。
+- 不要缓冲。每次写入后执行 `sys.stdout.flush()`。
+- 客户端控制生命周期。当 stdin 关闭（EOF）时，干净退出。
+- 不要静默处理 SIGPIPE；记录日志并退出。
 
-### Annotations
+### 注解
 
-Each tool can carry `annotations` describing safety properties:
+每个工具可携带描述安全属性的 annotations：
 
-- `readOnlyHint: true` — pure read, safe to retry.
-- `destructiveHint: true` — irreversible side effects; client should confirm.
-- `idempotentHint: true` — same inputs produce same outputs.
-- `openWorldHint: true` — interacts with external systems.
+- `readOnlyHint: true` —— 纯读取，可安全重试。
+- `destructiveHint: true` —— 不可逆副作用；客户端应确认。
+- `idempotentHint: true` —— 相同输入产生相同输出。
+- `openWorldHint: true` —— 与外部系统交互。
 
-The client uses these to decide UX (confirmation dialogs, status indicators) and routing (Phase 13 · 17).
+客户端用这些来决定 UX（确认对话框、状态指示器）和路由（Phase 13 · 17）。
 
-### Graduation path
+### 进阶路径
 
-The stdlib server in `code/main.py` is about 180 lines. FastMCP (Python) collapses the same logic to decorator-style:
+`code/main.py` 中的标准库服务器约 180 行。FastMCP（Python）将相同逻辑压缩为装饰器风格：
 
 ```python
 from fastmcp import FastMCP
@@ -118,57 +118,57 @@ def notes_search(query: str, limit: int = 10) -> list[dict]:
     ...
 ```
 
-The TypeScript SDK has an equivalent shape. The graduation path is drop-in when you are ready; the concepts (capabilities, dispatch, content blocks) are the same.
+TypeScript SDK 有等价的形态。进阶路径是即插即用的，当你准备好时即可迁移；概念（能力、分发、内容块）相同。
 
-## Use It
+## 使用它
 
-`code/main.py` is a complete notes MCP server over stdio, stdlib only. It handles `initialize`, `tools/list`, `tools/call` for three tools (`notes_list`, `notes_search`, `notes_create`), `resources/list` and `resources/read` for each note, and a `review_note` prompt. You can drive it by piping JSON-RPC messages:
+`code/main.py` 是一个基于 stdio 的完整 notes MCP 服务器，仅使用标准库。它处理 `initialize`、`tools/list`、`tools/call` 三种工具（`notes_list`、`notes_search`、`notes_create`）、每条笔记的 `resources/list` 和 `resources/read`，以及 `review_note` 提示。你可以通过管道输送 JSON-RPC 消息来驱动它：
 
 ```
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | python main.py
 ```
 
-What to look at:
+需要关注：
 
-- The dispatcher is a `dict[str, Callable]` keyed by method name.
-- Every tool executor returns a list of content blocks, not a bare string.
-- `isError: true` is set when the executor raises.
+- 分发器是一个以方法名为键的 `dict[str, Callable]`。
+- 每个工具执行器都返回内容块列表，而不是裸字符串。
+- 当执行器抛出异常时设置 `isError: true`。
 
-## Ship It
+## 交付
 
-This lesson produces `outputs/skill-mcp-server-scaffolder.md`. Given a domain (notes, tickets, files, database), the skill scaffolds an MCP server with the right tools / resources / prompts split and SDK graduation path.
+本节课生成 `outputs/skill-mcp-server-scaffolder.md`。给定一个领域（notes、tickets、files、database），该技能会搭建一个 MCP 服务器，正确划分工具 / 资源 / 提示，并提供 SDK 迁移路径。
 
-## Exercises
+## 练习
 
-1. Run `code/main.py` and drive it with hand-built JSON-RPC messages. Exercise `notes_create`, then `resources/read` to retrieve the new note.
+1. 运行 `code/main.py`，并用手动构造的 JSON-RPC 消息驱动它。练习 `notes_create`，然后用 `resources/read` 检索新笔记。
 
-2. Add a `notes_delete` tool with `annotations: {destructiveHint: true}`. Verify the client would surface a confirmation dialog (this requires a real host; Claude Desktop works).
+2. 添加 `notes_delete` 工具，带 `annotations: {destructiveHint: true}`。验证客户端会显示确认对话框（这需要真实宿主；Claude Desktop 可用）。
 
-3. Implement `resources/subscribe` so the server pushes `notifications/resources/updated` whenever a note is modified. Add a keepalive task.
+3. 实现 `resources/subscribe`，使得笔记被修改时服务器推送 `notifications/resources/updated`。添加一个保活任务。
 
-4. Port the server to FastMCP. The Python file should shrink to under 80 lines. The wire behavior must be identical; verify with the same JSON-RPC test harness.
+4. 将服务器迁移到 FastMCP。Python 文件应缩减到 80 行以内。线级行为必须一致；用相同的 JSON-RPC 测试套件验证。
 
-5. Read the spec's `server/tools` section and identify one field of a tool definition not implemented in this lesson's server. (Hint: there are several; pick one and add it.)
+5. 阅读规范中的 `server/tools` 章节，找出本节课服务器未实现的工具定义字段。（提示：有多个；选一个并添加。）
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|----------------|------------------------|
-| MCP server | "The thing that exposes tools" | Process that speaks MCP JSON-RPC over stdio or HTTP |
-| stdio transport | "Child process model" | Server is spawned by client; communicates via stdin/stdout |
-| Dispatcher | "Method router" | Map of JSON-RPC method name to handler function |
-| Content block | "Tool result chunk" | Typed element in the `content` array of a tool response |
-| `isError` | "Tool-level failure" | Signals the tool failed; distinguishes from JSON-RPC error |
-| Annotations | "Safety hints" | readOnly / destructive / idempotent / openWorld flags |
-| FastMCP | "Python SDK" | Decorator-based higher-level framework on top of the MCP protocol |
-| Resource URI | "Addressable data" | `file://`, `db://`, or custom scheme identifying a resource |
-| Prompt template | "Slash-command brief" | Server-supplied template with argument slots for host UIs |
-| Capability declaration | "Feature toggle" | Per-primitive flags declared in `initialize` |
+| 术语 | 通常说法 | 实际含义 |
+|------|----------|----------|
+| MCP server | "暴露工具的东西" | 通过 stdio 或 HTTP 使用 MCP JSON-RPC 通信的进程 |
+| stdio transport | "子进程模型" | 由客户端启动服务器；通过 stdin/stdout 通信 |
+| Dispatcher | "方法路由器" | JSON-RPC 方法名到处理函数的映射 |
+| Content block | "工具结果片段" | 工具响应 `content` 数组中的带类型元素 |
+| `isError` | "工具级失败" | 表示工具失败；与 JSON-RPC 错误区分开 |
+| Annotations | "安全提示" | readOnly / destructive / idempotent / openWorld 标志 |
+| FastMCP | "Python SDK" | 基于 MCP 协议的装饰器式高级框架 |
+| Resource URI | "可寻址数据" | `file://`、`db://` 或自定义方案，用于标识资源 |
+| Prompt template | "斜杠命令简介" | 服务器提供的带参数槽的模板，供宿主 UI 使用 |
+| Capability declaration | "功能开关" | 在 `initialize` 中按原语声明的标志 |
 
-## Further Reading
+## 延伸阅读
 
-- [Model Context Protocol — Python SDK](https://github.com/modelcontextprotocol/python-sdk) — the reference Python implementation
-- [Model Context Protocol — TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) — parallel TS implementation
-- [FastMCP — server framework](https://gofastmcp.com/) — decorator-style Python API for MCP servers
-- [MCP — Quickstart server guide](https://modelcontextprotocol.io/quickstart/server) — end-to-end tutorial using either SDK
-- [MCP — Server tools spec](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) — complete reference for tools/* messages
+- [Model Context Protocol — Python SDK](https://github.com/modelcontextprotocol/python-sdk) —— 参考 Python 实现
+- [Model Context Protocol — TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) —— 对等的 TypeScript 实现
+- [FastMCP — server framework](https://gofastmcp.com/) —— MCP 服务器的装饰器式 Python API
+- [MCP — Quickstart server guide](https://modelcontextprotocol.io/quickstart/server) —— 使用任一 SDK 的端到端教程
+- [MCP — Server tools spec](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) —— `tools/*` 消息的完整参考

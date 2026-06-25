@@ -1,57 +1,57 @@
-# MCP Security II — OAuth 2.1, Resource Indicators, Incremental Scopes
+# MCP 安全 II — OAuth 2.1、资源指示符（Resource Indicators）与增量作用域（Incremental Scopes）
 
-> Remote MCP servers need authorization, not just authentication. The 2025-11-25 spec aligns with OAuth 2.1 + PKCE + resource indicators (RFC 8707) + protected-resource metadata (RFC 9728). SEP-835 adds incremental scope consent with step-up authorization on 403 WWW-Authenticate. This lesson implements the step-up flow as a state machine so you can see every hop.
+> 远程 MCP 服务器不仅需要认证（authentication），还需要授权（authorization）。2025-11-25 版规范与 OAuth 2.1 + PKCE + 资源指示符（resource indicators，RFC 8707）+ 受保护资源元数据（protected-resource metadata，RFC 9728）对齐。SEP-835 在 403 WWW-Authenticate 上增加了增量作用域同意（incremental scope consent）与升级授权（step-up authorization）。本节课把升级流程实现为状态机，让你看清每一步跳转。
 
-**Type:** Build
-**Languages:** Python (stdlib, OAuth state machine simulator)
-**Prerequisites:** Phase 13 · 09 (transports), Phase 13 · 15 (security I)
-**Time:** ~75 minutes
+**类型：** 构建
+**语言：** Python（标准库，OAuth 状态机模拟器）
+**前置知识：** 第 13 阶段 · 09（传输层），第 13 阶段 · 15（安全 I）
+**时长：** 约 75 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Distinguish resource server from authorization server responsibilities.
-- Walk the PKCE-protected OAuth 2.1 authorization code flow.
-- Use `resource` (RFC 8707) and protected-resource metadata (RFC 9728) to prevent confused-deputy attacks.
-- Implement step-up authorization: server responds 403 with WWW-Authenticate asking for a higher scope; client re-prompts user consent and retries.
+- 区分资源服务器（resource server）与授权服务器（authorization server）的职责。
+- 走一遍受 PKCE 保护的 OAuth 2.1 授权码流程。
+- 使用 `resource` 参数（RFC 8707）和受保护资源元数据（RFC 9728）防止糊涂副手（confused deputy）攻击。
+- 实现升级授权（step-up authorization）：服务器返回 403 并在 WWW-Authenticate 中要求更高作用域；客户端重新提示用户同意并重试。
 
-## The Problem
+## 问题背景
 
-Early MCP (pre-2025) shipped remote servers with ad-hoc API keys or even no auth. The 2025-11-25 spec closes that gap with a full OAuth 2.1 profile.
+早期 MCP（2025 年前）的远程服务器要么使用临时 API 密钥，要么干脆不做认证。2025-11-25 版规范通过完整的 OAuth 2.1 配置文件补齐了这一短板。
 
-Three real-world needs:
+三个真实场景需求：
 
-- **Ordinary remote servers.** User installs a remote MCP server that accesses their Notion / GitHub / Gmail. OAuth 2.1 with PKCE is the right shape.
-- **Scope escalation.** A notes server granted `notes:read` can later need `notes:write` for a specific action. Instead of re-doing the whole flow, step-up (SEP-835) asks for the additional scope.
-- **Confused deputy prevention.** Client holds a token audience-scoped for Server A. Server A is malicious and tries to present the token to Server B. Resource indicators (RFC 8707) pin the token to its intended audience.
+- **普通远程服务器。** 用户安装了一个访问其 Notion / GitHub / Gmail 的远程 MCP 服务器。OAuth 2.1 + PKCE 是合适的形态。
+- **作用域提升。** 被授予 `notes:read` 的笔记服务器之后可能因某个操作需要 `notes:write`。与其重新走完整流程，升级授权（step-up，SEP-835）可以只申请额外的作用域。
+- **防止糊涂副手攻击。** 客户端持有一个受众（audience）限定给服务器 A 的令牌。服务器 A 是恶意的，试图把该令牌出示给服务器 B。资源指示符（RFC 8707）把令牌锁定到其预定受众。
 
-OAuth 2.1 is not new. What is new is MCP's profile: specific required flows (authorization code + PKCE only; no implicit, no client credentials by default), resource indicators mandatory on every token request, and protected-resource metadata published so clients know where to go.
+OAuth 2.1 并不新鲜。新鲜的是 MCP 的配置文件（profile）：指定了必需的流程（仅授权码 + PKCE；禁止隐式授权，默认不允许客户端凭据），每次令牌请求都必须带资源指示符，并发布受保护资源元数据让客户端知道该去哪里。
 
-## The Concept
+## 核心概念
 
-### Roles
+### 角色
 
-- **Client.** The MCP client (Claude Desktop, Cursor, etc.).
-- **Resource server.** The MCP server (notes, GitHub, Postgres, whatever).
-- **Authorization server.** Issues tokens. May be the same service as the resource server or a separate IdP (Auth0, Keycloak, Cognito).
+- **客户端（Client）。** MCP 客户端（如 Claude Desktop、Cursor 等）。
+- **资源服务器（Resource server）。** MCP 服务器（笔记、GitHub、Postgres 等）。
+- **授权服务器（Authorization server）。** 负责签发令牌。可能与资源服务器是同一个服务，也可能是独立的身份提供方（IdP），如 Auth0、Keycloak、Cognito。
 
-In MCP's profile, resource and authorization servers CAN be the same host but SHOULD be distinguished by URLs.
+在 MCP 的配置文件中，资源服务器和授权服务器**可以（CAN）**是同一主机，但**应该（SHOULD）**通过 URL 区分。
 
-### Authorization code + PKCE
+### 授权码 + PKCE
 
-The flow:
+流程如下：
 
-1. Client generates `code_verifier` (random) and `code_challenge` (SHA256).
-2. Client redirects user to `/authorize?response_type=code&client_id=...&redirect_uri=...&scope=notes:read&code_challenge=...&resource=https://notes.example.com`.
-3. User consents. Authorization server redirects to `redirect_uri?code=...`.
-4. Client POSTs to `/token?grant_type=authorization_code&code=...&code_verifier=...&resource=...`.
-5. Authorization server validates the verifier's hash against the stored challenge and issues an access token.
-6. Client uses the token: `Authorization: Bearer ...` on every request to the resource server.
+1. 客户端生成 `code_verifier`（随机值）和 `code_challenge`（SHA256）。
+2. 客户端将用户重定向到 `/authorize?response_type=code&client_id=...&redirect_uri=...&scope=notes:read&code_challenge=...&resource=https://notes.example.com`。
+3. 用户同意。授权服务器重定向到 `redirect_uri?code=...`。
+4. 客户端 POST 到 `/token?grant_type=authorization_code&code=...&code_verifier=...&resource=...`。
+5. 授权服务器将验证器（verifier）的哈希与存储的挑战（challenge）比对，然后签发访问令牌。
+6. 客户端使用该令牌：每次向资源服务器请求都带上 `Authorization: Bearer ...`。
 
-PKCE prevents authorization-code interception attacks. Resource indicators prevent the token from being valid elsewhere.
+PKCE 防止授权码被截获的攻击。资源指示符防止令牌在其他地方生效。
 
-### Protected-resource metadata (RFC 9728)
+### 受保护资源元数据（RFC 9728）
 
-The resource server publishes a `.well-known/oauth-protected-resource` document:
+资源服务器发布一份 `.well-known/oauth-protected-resource` 文档：
 
 ```json
 {
@@ -61,25 +61,25 @@ The resource server publishes a `.well-known/oauth-protected-resource` document:
 }
 ```
 
-Client discovers the authorization server from the resource server. Reduces configuration — the client only needs the resource URL.
+客户端从资源服务器发现授权服务器。这减少了配置——客户端只需要资源 URL。
 
-### Resource indicators (RFC 8707)
+### 资源指示符（RFC 8707）
 
-`resource` parameter in the token request pins the token's intended audience. The issued token contains `aud: "https://notes.example.com"`. Another MCP server receiving this token checks `aud` and rejects it.
+令牌请求中的 `resource` 参数固定了令牌的预定受众（audience）。签发的令牌包含 `aud: "https://notes.example.com"`。收到该令牌的其他 MCP 服务器会检查 `aud` 并拒绝。
 
-### Scope model
+### 作用域模型
 
-Scopes are space-separated strings. Common MCP conventions:
+作用域是空格分隔的字符串。常见的 MCP 约定：
 
-- `notes:read`, `notes:write`, `notes:delete`
-- `admin:*` for admin capabilities (use sparingly)
-- `profile:read` for identity
+- `notes:read`、`notes:write`、`notes:delete`
+- `admin:*` 表示管理员能力（谨慎使用）
+- `profile:read` 表示身份信息
 
-Scope selection should be least-privilege: request what you need now, step up when you need more.
+选择作用域应遵循最小权限原则：现在需要什么就申请什么，需要更多时再升级。
 
-### Step-up authorization (SEP-835)
+### 升级授权（SEP-835）
 
-User grants `notes:read`. They later ask the agent to delete a note. The server responds:
+用户授予了 `notes:read`。之后他们要求智能体删除一条笔记。服务器响应：
 
 ```
 HTTP/1.1 403 Forbidden
@@ -87,79 +87,79 @@ WWW-Authenticate: Bearer error="insufficient_scope",
     scope="notes:delete", resource="https://notes.example.com"
 ```
 
-Client sees the insufficient_scope error, prompts the user with a consent dialog for the additional scope, performs a mini OAuth flow for it, retries the request with the new token.
+客户端看到 `insufficient_scope` 错误，弹出同意对话框请求额外作用域，执行一次小型 OAuth 流程，然后用新令牌重试请求。
 
-### Token audience validation
+### 令牌受众校验
 
-Every request: server checks `token.aud == self.resource_url`. Mismatch = 401. This stops cross-server token reuse.
+每个请求：服务器检查 `token.aud == self.resource_url`。不匹配则返回 401。这阻止了跨服务器令牌复用。
 
-### Short-lived tokens and rotation
+### 短效令牌与轮换
 
-Access tokens SHOULD be short-lived (1 hour default). Refresh tokens rotate on every refresh. The client handles silent refresh in the background.
+访问令牌（access token）**应该（SHOULD）**是短效的（默认 1 小时）。每次刷新时刷新令牌（refresh token）都会轮换。客户端在后台处理静默刷新。
 
-### No token passthrough
+### 禁止令牌透传
 
-Sampling servers (Phase 13 · 11) MUST NOT pass the client's token through to other services. The sampling request is the boundary.
+采样服务器（第 13 阶段 · 11）**禁止（MUST NOT）**把客户端的令牌透传给其他服务。采样请求就是边界。
 
-### Confused deputy prevention
+### 防止糊涂副手攻击
 
-Token binds to `aud`. Client binds to `client_id`. Every request validated against both. The spec explicitly bans the old "pass-the-token" pattern that was common in pre-MCP remote tool ecosystems.
+令牌绑定到 `aud`。客户端绑定到 `client_id`。每个请求都针对这两者进行校验。规范明确禁止了 MCP 出现前远程工具生态中常见的“传令牌”模式。
 
-### Client ID discovery
+### 客户端 ID 发现
 
-Each MCP client publishes its metadata at a fixed URL. Authorization servers can fetch the client's metadata document to discover redirect URIs and contact info. This removes manual client registration.
+每个 MCP 客户端在固定 URL 发布自己的元数据。授权服务器可以获取该客户端元数据文档，从而发现重定向 URI 和联系信息。这省去了手动客户端注册。
 
-### Gateways and OAuth
+### 网关与 OAuth
 
-Phase 13 · 17 shows how an enterprise gateway handles OAuth: gateway holds credentials for upstream servers, tokens to the client are gateway-issued, and upstream tokens never leave the gateway. This flips the trust model — users authenticate with the gateway once; gateway handles N server authorizations.
+第 13 阶段 · 17 展示了企业网关如何处理 OAuth：网关持有上游服务器的凭据，发给客户端的令牌由网关签发，上游令牌永远不会离开网关。这颠覆了信任模型——用户只需向网关认证一次；网关负责 N 个服务器的授权。
 
-## Use It
+## 使用它
 
-`code/main.py` simulates the full OAuth 2.1 step-up flow as a state machine. It implements:
+`code/main.py` 将完整的 OAuth 2.1 升级流程模拟为状态机。它实现了：
 
-- PKCE code-verifier / challenge generation.
-- Authorization code flow with resource indicator.
-- Protected-resource metadata endpoint.
-- Token validation with audience check.
-- Step-up on `insufficient_scope`.
+- PKCE 验证码（code-verifier）/ 挑战（challenge）生成。
+- 带资源指示符的授权码流程。
+- 受保护资源元数据端点。
+- 带受众检查的令牌校验。
+- `insufficient_scope` 时的升级授权。
 
-No HTTP server in this lesson; the state machine runs in memory so you can trace every hop. Phase 13 · 17's gateway lesson wires it to an actual transport.
+本节课没有 HTTP 服务器；状态机在内存中运行，方便你追踪每一步跳转。第 13 阶段 · 17 的网关课程会把它接到真实传输层上。
 
-## Ship It
+## 交付成果
 
-This lesson produces `outputs/skill-oauth-scope-planner.md`. Given a remote MCP server with tools, the skill designs the scope set, pinning rules, and step-up policy.
+本节课产出 `outputs/skill-oauth-scope-planner.md`。给定一个带工具的远程 MCP 服务器，该技能会设计作用域集合、固定规则（pinning rules）和升级策略（step-up policy）。
 
-## Exercises
+## 练习
 
-1. Run `code/main.py`. Trace the two-scope step-up flow. Note which hops repeat on step-up.
+1. 运行 `code/main.py`。追踪双作用域升级流程。注意升级时哪些步骤会重复。
 
-2. Add refresh-token rotation: every refresh issues a new refresh token and invalidates the old one. Simulate a stolen refresh token being used after rotation and confirm it fails.
+2. 加入刷新令牌轮换：每次刷新都签发新的刷新令牌并作废旧的。模拟轮换后被盗的刷新令牌被使用，确认它会失败。
 
-3. Implement the protected-resource metadata endpoint as a real HTTP response using stdlib http.server. Mirror the /mcp endpoint from Lesson 09.
+3. 使用标准库 `http.server` 把受保护资源元数据端点实现为真实 HTTP 响应。参考第 09 课的 `/mcp` 端点。
 
-4. Design a scope hierarchy for a GitHub MCP server: read repo, write PR, approve PR, merge PR, admin. Use step-up between each level.
+4. 为一个 GitHub MCP 服务器设计作用域层级：读取仓库、创建 PR、批准 PR、合并 PR、管理员。在每一级之间使用升级授权。
 
-5. Read RFC 8707 and RFC 9728. Identify the one field in 9728 that MCP uses differently from the RFC's example. (Hint: it concerns `scopes_supported`.)
+5. 阅读 RFC 8707 和 RFC 9728。找出 9728 中 MCP 与 RFC 示例用法不同的那一个字段。（提示：与 `scopes_supported` 有关。）
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|----------------|------------------------|
-| OAuth 2.1 | "Modern OAuth" | Consolidated RFC that mandates PKCE and forbids implicit flow |
-| PKCE | "Proof-of-possession" | Code verifier + challenge defeating authorization-code interception |
-| Resource indicator | "Token audience" | RFC 8707 `resource` parameter pinning token to one server |
-| Protected-resource metadata | "Discovery doc" | RFC 9728 `.well-known/oauth-protected-resource` |
-| Step-up authorization | "Incremental consent" | SEP-835 flow for adding scopes on demand |
-| `insufficient_scope` | "403 with WWW-Authenticate" | Server signal to re-consent for a larger scope |
-| Confused deputy | "Token reuse across services" | Attack where a trusted holder forwards a token inappropriately |
-| Short-lived token | "Access token TTL" | Bearer that expires quickly; refresh token renews |
-| Scope hierarchy | "Least privilege stack" | Graduated scope set with step-up between levels |
-| Client ID metadata | "Client discovery doc" | URL at which the client publishes its own OAuth metadata |
+| 术语 | 大家的说法 | 实际含义 |
+|------|------------|----------|
+| OAuth 2.1 | “现代 OAuth” | 合并后的 RFC，强制要求 PKCE 并禁止隐式流程 |
+| PKCE | “持有证明” | 验证码 + 挑战，用于挫败授权码截获攻击 |
+| 资源指示符（Resource indicator） | “令牌受众” | RFC 8707 的 `resource` 参数，将令牌锁定到单一服务器 |
+| 受保护资源元数据（Protected-resource metadata） | “发现文档” | RFC 9728 的 `.well-known/oauth-protected-resource` |
+| 升级授权（Step-up authorization） | “增量同意” | SEP-835 按需添加作用域的流程 |
+| `insufficient_scope` | “带 WWW-Authenticate 的 403” | 服务器发出的信号，要求重新同意更大作用域 |
+| 糊涂副手（Confused deputy） | “跨服务复用令牌” | 可信持有者不适当地转发令牌所导致的攻击 |
+| 短效令牌（Short-lived token） | “访问令牌存活时间” | 很快过期的 Bearer 令牌；由刷新令牌续期 |
+| 作用域层级（Scope hierarchy） | “最小权限栈” | 分级的作用域集合，各级之间通过升级授权过渡 |
+| 客户端 ID 元数据（Client ID metadata） | “客户端发现文档” | 客户端发布自身 OAuth 元数据的 URL |
 
-## Further Reading
+## 延伸阅读
 
-- [MCP — Authorization spec](https://modelcontextprotocol.io/specification/draft/basic/authorization) — canonical MCP OAuth profile
-- [den.dev — MCP November authorization spec](https://den.dev/blog/mcp-november-authorization-spec/) — walkthrough of the 2025-11-25 changes
-- [RFC 8707 — Resource indicators for OAuth 2.0](https://datatracker.ietf.org/doc/html/rfc8707) — the audience-pinning RFC
-- [RFC 9728 — OAuth 2.0 protected resource metadata](https://datatracker.ietf.org/doc/html/rfc9728) — the discovery-document RFC
-- [Aembit — MCP OAuth 2.1, PKCE and the future of AI authorization](https://aembit.io/blog/mcp-oauth-2-1-pkce-and-the-future-of-ai-authorization/) — practical step-up-flow walk-through
+- [MCP — Authorization spec](https://modelcontextprotocol.io/specification/draft/basic/authorization) — MCP OAuth 配置文件权威文档
+- [den.dev — MCP November authorization spec](https://den.dev/blog/mcp-november-authorization-spec/) — 2025-11-25 变更的走读
+- [RFC 8707 — Resource indicators for OAuth 2.0](https://datatracker.ietf.org/doc/html/rfc8707) — 固定受众的 RFC
+- [RFC 9728 — OAuth 2.0 protected resource metadata](https://datatracker.ietf.org/doc/html/rfc9728) — 发现文档的 RFC
+- [Aembit — MCP OAuth 2.1, PKCE and the future of AI authorization](https://aembit.io/blog/mcp-oauth-2-1-pkce-and-the-future-of-ai-authorization/) — 实用的升级流程走读

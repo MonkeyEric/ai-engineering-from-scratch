@@ -1,37 +1,37 @@
-# Context Engineering: Windows, Budgets, Memory, and Retrieval
+# 上下文工程：窗口、预算、内存与检索
 
-> Prompt engineering is a subset. Context engineering is the whole game. A prompt is a string you type. Context is everything that goes into the model's window: system instructions, retrieved documents, tool definitions, conversation history, few-shot examples, and the prompt itself. The best AI engineers in 2026 are context engineers. They decide what goes in, what stays out, and in what order.
+> 提示工程（prompt engineering）只是子集。上下文工程（context engineering）才是全局。提示词是你输入的字符串；上下文则是进入模型窗口的一切：系统指令、检索到的文档、工具定义、对话历史、少样本示例（few-shot examples）以及提示词本身。2026 年最优秀的 AI 工程师都是上下文工程师：他们决定把什么放入窗口、把什么留在外面，以及按什么顺序排列。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 10 (LLMs from Scratch), Phase 11 Lesson 01-02
-**Time:** ~90 minutes
-**Related:** Phase 11 · 15 (Prompt Caching) — the cache-friendly layout is an extension of context engineering. Phase 5 · 28 (Long-Context Evaluation) for how to measure lost-in-the-middle with NIAH/RULER.
+**类型：** 构建（Build）  
+**语言：** Python  
+**前置要求：** Phase 10（从头开始的大语言模型）、Phase 11 第 01-02 课  
+**时长：** 约 90 分钟  
+**相关内容：** Phase 11 · 15（提示词缓存）—— 缓存友好的布局是上下文工程的延伸。Phase 5 · 28（长上下文评估）介绍如何用 NIAH/RULER 测量中部迷失。
 
-## Learning Objectives
+## 学习目标
 
-- Calculate token budgets across all context window components (system prompt, tools, history, retrieved docs, generation headroom)
-- Implement context window management strategies: truncation, summarization, and sliding window for conversation history
-- Prioritize and order context components to maximize the model's attention on the most relevant information
-- Build a context assembler that dynamically allocates tokens based on query type and available window space
+- 计算上下文窗口各组件的 token 预算（系统提示词、工具、历史、检索文档、生成预留）
+- 实现上下文窗口管理策略：截断（truncation）、摘要和对话历史的滑动窗口
+- 对上下文组件进行优先级排序，使模型把注意力（attention）集中在最相关的信息上
+- 构建一个上下文组装器（context assembler），能够根据查询类型和可用窗口空间动态分配 token
 
-## The Problem
+## 问题所在
 
-Claude Opus 4.7 has a 200K token window (1M in beta). GPT-5 has 400K. Gemini 3 Pro has 2M. Llama 4 claims 10M. These numbers sound enormous until you fill them.
+Claude Opus 4.7 拥有 200K token 的窗口（beta 版为 1M）。GPT-5 为 400K。Gemini 3 Pro 为 2M。Llama 4 号称 10M。这些数字听起来很大，直到你把它们填满。
 
-Here is a real breakdown for a coding assistant. System prompt: 500 tokens. Tool definitions for 50 tools: 8,000 tokens. Retrieved documentation: 4,000 tokens. Conversation history (10 turns): 6,000 tokens. Current user query: 200 tokens. Generation budget (max output): 4,000 tokens. Total: 22,700 tokens. That is only 18% of a 128K window.
+下面是一个编程助手的真实拆分：系统提示词 500 token；50 个工具的工具定义 8,000 token；检索到的文档 4,000 token；对话历史（10 轮）6,000 token；当前用户查询 200 token；生成预算（最大输出）4,000 token。总计 22,700 token，仅占 128K 窗口的 18%。
 
-But attention does not scale linearly with context length. A model with 128K tokens of context pays quadratic attention cost (O(n^2) in vanilla transformers, though most production models use efficient attention variants). More importantly, retrieval accuracy degrades. The "Needle in a Haystack" test shows that models struggle to find information placed in the middle of long contexts. Research by Liu et al. (2023) showed that LLMs retrieve information at the start and end of long contexts with near-perfect accuracy, but accuracy drops 10-20% for information placed in the middle (positions 40-70% of the context). This "lost-in-the-middle" effect varies by model but affects all current architectures.
+但注意力（attention）并不随上下文长度线性扩展。在 128K token 上下文下，模型需要付出二次方的注意力成本（在朴素 Transformer 中为 O(n²)，尽管大多数生产模型使用更高效的注意力变体）。更重要的是，检索（retrieval）准确率会下降。"大海捞针"（Needle in a Haystack）测试表明，模型很难在长上下文中间找到信息。Liu 等人（2023）的研究显示，大语言模型（LLM）对上下文开头和结尾的信息检索准确率接近完美，但对中部位置（上下文 40%-70% 处）的信息准确率下降 10%-20%。这种"中部迷失"（lost-in-the-middle）效应因模型而异，但影响当前所有架构。
 
-The practical lesson: having 200K tokens available does not mean using 200K tokens is effective. A carefully curated 10K token context often outperforms a dumped 100K token context. Context engineering is the discipline of maximizing signal-to-noise ratio within the context window.
+实践经验是：拥有 200K token 可用空间，并不意味着用满 200K token 就有效。一个精心策划的 10K token 上下文通常优于一股脑塞入的 100K token 上下文。上下文工程（context engineering）就是最大化上下文窗口中信噪比的学科。
 
-Every token you put in the window displaces a token that could carry more relevant information. Every irrelevant tool definition, every stale conversation turn, every chunk of retrieved text that does not answer the question -- each one makes the model slightly worse at the task.
+窗口里的每个 token 都会挤占一个可能携带更相关信息的 token。每个无关的工具定义、每条过时的对话轮次、每段无法回答问题的检索文本——都会让模型在该任务上的表现稍微变差。
 
-## The Concept
+## 核心概念
 
-### The Context Window is a Scarce Resource
+### 上下文窗口是稀缺资源
 
-Think of the context window as RAM, not disk. It is fast and directly accessible, but limited. You cannot fit everything. You must choose.
+把上下文窗口当成 RAM，而不是磁盘。它速度快、可直接访问，但容量有限。你不可能把所有东西都塞进去，必须做出选择。
 
 ```mermaid
 graph TD
@@ -54,20 +54,20 @@ graph TD
     style G fill:#1a1a2e,stroke:#0f3460,color:#fff
 ```
 
-Each component competes for space. Adding more tool definitions means less room for conversation history. Adding more retrieved context means less room for few-shot examples. Context engineering is the art of allocating this budget to maximize task performance.
+每个组件都在争夺空间。增加工具定义就意味着对话历史的空间变少；增加检索上下文就意味着少样本示例（few-shot examples）的空间变少。上下文工程就是分配这一预算以最大化任务性能的艺术。
 
-### Lost-in-the-Middle
+### 中部迷失（lost-in-the-middle）
 
-The most important empirical finding in context engineering. Models attend better to information at the beginning and end of the context. Information in the middle gets lower attention scores and is more likely to be ignored.
+这是上下文工程中最重要的实证发现。模型对上下文开头和结尾的信息注意力（attention）更高；中间位置的信息得分较低，更容易被忽略。
 
-Liu et al. (2023) tested this systematically. They placed a relevant document among 20 irrelevant documents at various positions and measured answer accuracy. When the relevant document was first or last, accuracy was 85-90%. When it was in the middle (position 10 of 20), accuracy dropped to 60-70%.
+Liu 等人（2023）系统地验证了这一点。他们把一篇相关文档放在 20 篇无关文档中的不同位置，并测量回答准确率。当相关文档位于首位或末位时，准确率为 85%-90%；当位于中部（20 篇中的第 10 位）时，准确率降至 60%-70%。
 
-This has direct engineering implications:
+这带来了直接的工程启示：
 
-- Put the most important information first (system prompt, critical instructions)
-- Put the current query and most relevant context last (recency bias helps)
-- Treat the middle of the context as the lowest-priority zone
-- If you must include information in the middle, duplicate the key point at the end
+- 把最重要的信息放在最前面（系统提示词、关键指令）
+- 把当前查询和最相关的上下文放在最后面（近因偏见有帮助）
+- 把上下文中部视为最低优先级区域
+- 如果必须把信息放在中部，在末尾重复一遍关键点
 
 ```mermaid
 graph LR
@@ -87,39 +87,39 @@ graph LR
     style P5 fill:#51cf66,color:#000
 ```
 
-### Context Components
+### 上下文组件
 
-**System prompt**: sets the persona, constraints, and behavioral rules. This goes first and stays constant across turns. Claude Code uses roughly 6,000 tokens for its system prompt including tool definitions and behavioral instructions. Keep it tight. Every word in the system prompt is repeated on every API call.
+**系统提示词（system prompt）**：设定人格、约束和行为规则。它放在最前面，并在多轮对话中保持不变。Claude Code 的系统提示词（包括工具定义和行为指令）约为 6,000 token。保持精简：系统提示词中的每个词都会在每次 API 调用中重复出现。
 
-**Tool definitions**: each tool adds 50-200 tokens (name, description, parameter schema). 50 tools at 150 tokens each is 7,500 tokens before any conversation happens. Dynamic tool selection -- only including tools relevant to the current query -- can reduce this by 60-80%.
+**工具定义（tool definitions）**：每个工具增加 50-200 token（名称、描述、参数模式）。50 个工具，每个 150 token，在任何对话发生前就已占用 7,500 token。动态工具选择——只包含与当前查询相关的工具——可将这部分减少 60%-80%。
 
-**Retrieved context**: documents from a vector database, search results, file contents. The quality of retrieval directly determines the quality of the response. Bad retrieval is worse than no retrieval -- it fills the window with noise and actively misleads the model.
+**检索上下文（retrieved context）**：来自向量数据库（vector database）的文档、搜索结果、文件内容。检索质量直接决定回答质量。糟糕的检索比没有检索更糟——它用噪声填满窗口，并主动误导模型。
 
-**Conversation history**: every previous user message and assistant response. Grows linearly with conversation length. A 50-turn conversation at 200 tokens per turn is 10,000 tokens of history. Most of it is irrelevant to the current query.
+**对话历史（conversation history）**：每条先前的用户消息和助手回复。随对话长度线性增长。50 轮对话，每轮 200 token，就是 10,000 token 的历史。其中大部分与当前查询无关。
 
-**Few-shot examples**: input/output pairs that demonstrate the desired behavior. Two to three well-chosen examples often improve output quality more than thousands of tokens of instructions. But they cost space.
+**少样本示例（few-shot examples）**：展示期望行为的输入/输出对。两三个精心挑选的示例往往比数千 token 的指令更能提升输出质量，但它们也占用空间。
 
-**Generation budget**: the tokens reserved for the model's response. If you fill the window to capacity, the model has no room to answer. Reserve at least 2,000-4,000 tokens for generation.
+**生成预算（generation budget）**：为模型回复预留的 token。如果你把窗口塞满，模型就没有回答空间。至少预留 2,000-4,000 token 用于生成。
 
-### Context Compression Strategies
+### 上下文压缩策略
 
-**History summarization**: instead of keeping all previous turns verbatim, periodically summarize the conversation. "We discussed X, decided Y, and the user wants Z" in 100 tokens replaces 10 turns that took 2,000 tokens. Run summarization when history exceeds a threshold (e.g., 5,000 tokens).
+**历史摘要（history summarization）**：不必逐字保留所有先前的对话轮次，而是定期对对话进行摘要。"我们讨论了 X，决定 Y，用户想要 Z" 用 100 token 就能替代原本占用 2,000 token 的 10 轮对话。当历史超过阈值（例如 5,000 token）时运行摘要。
 
-**Relevance filtering**: score each retrieved document against the current query and drop documents below a threshold. If you retrieved 10 chunks but only 3 are relevant, discard the other 7. Better to have 3 highly relevant chunks than 10 mediocre ones.
+**相关性过滤（relevance filtering）**：为每篇检索到的文档针对当前查询打分，并丢弃低于阈值的文档。如果你检索到 10 个片段，只有 3 个相关，那就扔掉另外 7 个。3 个高度相关的片段优于 10 个平庸的片段。
 
-**Tool pruning**: classify the user's query intent and only include tools relevant to that intent. A code question does not need calendar tools. A scheduling question does not need file system tools. This can reduce tool definitions from 8,000 tokens to 1,000.
+**工具剪枝（tool pruning）**：对用户查询意图进行分类，只包含与该意图相关的工具。代码问题不需要日历工具；日程问题不需要文件系统工具。这可以将工具定义从 8,000 token 缩减到 1,000 token。
 
-**Recursive summarization**: for very long documents, summarize in stages. First summarize each section, then summarize the summaries. A 50-page document becomes a 500-token digest that captures the key points.
+**递归摘要（recursive summarization）**：对于非常长的文档，分阶段摘要。先对每个章节摘要，再对摘要进行摘要。一份 50 页的文档可以变成 500 token 的摘要，抓住关键要点。
 
-### Memory Systems
+### 记忆系统
 
-Context engineering spans three time horizons.
+上下文工程跨越三个时间尺度。
 
-**Short-term memory**: the current conversation. Stored in the context window directly. Grows with each turn. Managed by summarization and truncation.
+**短期记忆（short-term memory）**：当前对话。直接存储在上下文窗口中，随每轮对话增长。通过摘要和截断管理。
 
-**Long-term memory**: facts and preferences that persist across conversations. "The user prefers TypeScript." "The project uses PostgreSQL." Stored in a database, retrieved on session start. Claude Code stores this in CLAUDE.md files. ChatGPT stores it in its memory feature.
+**长期记忆（long-term memory）**：跨对话持久存在的事实与偏好。"用户偏好 TypeScript。""项目使用 PostgreSQL。"存储在数据库中，会话开始时检索。Claude Code 将其存储在 CLAUDE.md 文件中，ChatGPT 则存储在记忆功能中。
 
-**Episodic memory**: specific past interactions that might be relevant. "Last Tuesday, we debugged a similar issue in the auth module." Stored as embeddings, retrieved when the current conversation matches a past episode.
+**情景记忆（episodic memory）**：可能相关的具体过往交互。"上周二，我们在 auth 模块中调试过类似问题。"以嵌入（embeddings）形式存储，当当前对话与过往情景相似时被检索。
 
 ```mermaid
 graph TD
@@ -144,24 +144,24 @@ graph TD
     style CW fill:#1a1a2e,stroke:#ffa500,color:#fff
 ```
 
-### Dynamic Context Assembly
+### 动态上下文组装
 
-The key insight: different queries need different context. A static system prompt + static tools + static history is wasteful. The best systems dynamically assemble context per query.
+关键洞察：不同查询需要不同上下文。静态系统提示词 + 静态工具 + 静态历史是浪费。最优秀的系统会为每个查询动态组装上下文。
 
-1. Classify the query intent
-2. Select relevant tools (not all tools)
-3. Retrieve relevant documents (not a fixed set)
-4. Include relevant history turns (not all history)
-5. Add few-shot examples that match the task type
-6. Order everything by importance: critical first, important last, optional in the middle
+1. 分类查询意图
+2. 选择相关工具（而非全部工具）
+3. 检索相关文档（而非固定集合）
+4. 包含相关历史轮次（而非全部历史）
+5. 添加与任务类型匹配的少样本示例
+6. 按重要性排序：关键信息放最前，重要信息放最后，可选信息放中部
 
-This is what separates a good AI application from a great one. The model is the same. The context is the differentiator.
+这决定了 AI 应用是"好"还是"卓越"。模型本身相同，差异在于上下文。
 
-## Build It
+## 动手实现
 
-### Step 1: Token Counter
+### 步骤 1：Token 计数器
 
-You cannot budget what you cannot measure. Build a simple token counter (approximation using whitespace splitting, since the exact count depends on the tokenizer).
+你无法预算无法测量的东西。构建一个简单的 token 计数器（使用空格分割近似，因为精确数量取决于 tokenizer）。
 
 ```python
 import json
@@ -177,9 +177,9 @@ def count_tokens_json(obj):
     return count_tokens(json.dumps(obj))
 ```
 
-### Step 2: Context Budget Manager
+### 步骤 2：上下文预算管理器
 
-The core abstraction. A budget manager tracks how many tokens each component uses and enforces limits.
+核心抽象。预算管理器跟踪每个组件使用的 token 数量并强制执行限制。
 
 ```python
 class ContextBudget:
@@ -234,9 +234,9 @@ class ContextBudget:
         return "\n".join(lines)
 ```
 
-### Step 3: Lost-in-the-Middle Reordering
+### 步骤 3：中部迷失重排
 
-Implement the reordering strategy: most important items go first and last, least important go in the middle.
+实现重排策略：最重要的项放在最前和最后，最不重要的放在中部。
 
 ```python
 def reorder_lost_in_middle(items, scores):
@@ -265,9 +265,9 @@ def score_relevance(query, documents):
     return scores
 ```
 
-### Step 4: Conversation History Compressor
+### 步骤 4：对话历史压缩器
 
-Summarize old conversation turns to reclaim token budget.
+摘要旧的对话轮次以回收 token 预算。
 
 ```python
 class ConversationManager:
@@ -316,9 +316,9 @@ class ConversationManager:
         return count_tokens(self.get_context())
 ```
 
-### Step 5: Dynamic Tool Selector
+### 步骤 5：动态工具选择器
 
-Only include tools relevant to the current query. Classify intent, then filter.
+只包含与当前查询相关的工具。先分类意图，再过滤。
 
 ```python
 TOOL_REGISTRY = {
@@ -411,9 +411,9 @@ def select_tools(query, token_budget=2000):
     return relevant, total_tokens
 ```
 
-### Step 6: Full Context Assembly Pipeline
+### 步骤 6：完整上下文组装流水线
 
-Wire everything together. Given a query, dynamically assemble the optimal context.
+把所有组件串联起来。给定一个查询，动态组装最优上下文。
 
 ```python
 class ContextEngine:
@@ -523,68 +523,68 @@ def run_demo():
     print(f"  (Most relevant at start and end, least relevant in middle)")
 ```
 
-## Use It
+## 应用实例
 
-### Claude Code's Context Strategy
+### Claude Code 的上下文策略
 
-Claude Code manages context with a layered approach. The system prompt includes behavioral rules and tool definitions (~6K tokens). When you open a file, its contents are injected as context. When you search, results are added. Old conversation turns are summarized. CLAUDE.md provides long-term memory that persists across sessions.
+Claude Code 采用分层方式管理上下文。系统提示词包含行为规则和工具定义（约 6K token）。打开文件时，其内容被注入上下文；搜索时，结果会被加入；旧的对话轮次会被摘要；CLAUDE.md 提供跨会话的长期记忆。
 
-The key engineering decision: Claude Code does not dump your entire codebase into the context. It retrieves relevant files on demand. This is context engineering in practice.
+关键工程决策：Claude Code 不会把整个代码库一股脑塞进上下文，而是在需要时检索相关文件。这就是上下文工程的实践。
 
-### Cursor's Dynamic Context Loading
+### Cursor 的动态上下文加载
 
-Cursor indexes your entire codebase into embeddings. When you type a query, it retrieves the most relevant files and code blocks using vector similarity. Only those pieces go into the context window. A 500K-line codebase is compressed into the 5-10 most relevant code blocks.
+Cursor 将整个代码库索引为嵌入（embeddings）。当你输入查询时，它通过向量相似度检索最相关的文件和代码块，只有这些片段会进入上下文窗口。一个 50 万行的代码库被压缩为 5-10 个最相关的代码块。
 
-This is the pattern: embed everything, retrieve on demand, include only what matters.
+模式是：嵌入所有内容、按需检索、只纳入重要的部分。
 
-### ChatGPT Memory
+### ChatGPT 记忆
 
-ChatGPT stores user preferences and facts as long-term memory. On each conversation start, relevant memories are retrieved and included in the system prompt. "The user prefers Python" costs 5 tokens but saves hundreds of tokens of repeated instructions across conversations.
+ChatGPT 将用户偏好和事实存储为长期记忆。每次对话开始时，相关记忆会被检索并纳入系统提示词。"用户偏好 Python" 只花 5 个 token，却能避免跨对话重复数百 token 的指令。
 
-### RAG as Context Engineering
+### RAG 即上下文工程
 
-Retrieval-Augmented Generation is context engineering formalized. Instead of stuffing knowledge into the model's weights (training) or the system prompt (static context), you retrieve relevant documents at query time and inject them into the context window. The entire RAG pipeline -- chunking, embedding, retrieval, reranking -- exists to solve one problem: putting the right information in the context window.
+检索增强生成（Retrieval-Augmented Generation，RAG）是上下文工程的形式化。你不把知识硬塞进模型权重（训练）或系统提示词（静态上下文），而是在查询时检索相关文档并注入上下文窗口。整个 RAG 流水线——分块、嵌入、检索、重排序——只为解决一个问题：把正确的信息放进上下文窗口。
 
-## Ship It
+## 交付产出
 
-This lesson produces `outputs/prompt-context-optimizer.md` -- a reusable prompt that audits a context assembly strategy and recommends optimizations. Feed it your system prompt, tool count, average history length, and retrieval strategy, and it identifies token waste and suggests improvements.
+本课生成 `outputs/prompt-context-optimizer.md` —— 一个可复用的提示词，用于审计上下文组装策略并推荐优化方案。向它提供你的系统提示词、工具数量、平均历史长度和检索策略，它会识别 token 浪费并给出改进建议。
 
-It also produces `outputs/skill-context-engineering.md` -- a decision framework for designing context assembly pipelines based on task type, context window size, and latency budget.
+同时生成 `outputs/skill-context-engineering.md` —— 一个设计上下文组装流水线的决策框架，依据任务类型、上下文窗口大小和延迟预算。
 
-## Exercises
+## 练习
 
-1. Add a "token waste detector" to the ContextBudget class. It should flag components using more than 30% of the budget and suggest compression strategies specific to each component type (summarize history, prune tools, re-rank documents).
+1. 为 `ContextBudget` 类添加"token 浪费检测器"。当某个组件占用超过 30% 的预算时发出标记，并针对每种组件类型给出具体压缩策略（摘要历史、剪枝工具、重排文档）。
 
-2. Implement semantic deduplication for retrieved context. If two retrieved documents are more than 80% similar (by word overlap or cosine similarity of their embeddings), keep only the higher-scored one. Measure how much token budget this recovers.
+2. 为检索上下文实现语义去重。如果两篇检索到的文档相似度超过 80%（按词重叠或嵌入的余弦相似度），只保留得分更高的一篇。测量这能回收多少 token 预算。
 
-3. Build a "context replay" tool. Given a conversation transcript, replay it through the ContextEngine and visualize how the budget allocation changes turn by turn. Plot token usage per component over time. Identify the turn where context starts getting compressed.
+3. 构建一个"上下文回放"工具。给定一段对话记录，逐轮通过 `ContextEngine` 回放，并可视化预算分配如何逐轮变化。绘制各组件的 token 使用量随时间变化曲线，找出上下文开始被压缩的那一轮。
 
-4. Implement a priority-based tool selector. Instead of binary include/exclude, assign each tool a relevance score to the current query. Include tools in descending relevance order until the tool budget is exhausted. Compare task performance with 5, 10, 20, and 50 tools included.
+4. 实现基于优先级的工具选择器。不采用简单的包含/排除，而是为每个工具分配与当前查询的相关性得分。按得分降序纳入工具，直到工具预算耗尽。比较包含 5、10、20、50 个工具时的任务表现。
 
-5. Build a multi-strategy context compressor. Implement three compression strategies (truncation, summarization, extraction of key sentences) and benchmark them on a set of 20 documents. Measure the tradeoff between compression ratio and information retention (does the compressed version still contain the answer to the query?).
+5. 构建多策略上下文压缩器。实现三种压缩策略（截断、摘要、提取关键句），并在 20 篇文档上 benchmark。衡量压缩比与信息保留率之间的权衡（压缩版本是否仍包含查询答案？）。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|----------------|----------------------|
-| Context window | "How much the model can read" | The maximum number of tokens (input + output) the model processes in a single forward pass -- 400K for GPT-5, 200K (1M beta) for Claude Opus 4.7, 2M for Gemini 3 Pro |
-| Context engineering | "Advanced prompt engineering" | The discipline of deciding what goes into the context window, in what order, and at what priority -- encompasses retrieval, compression, tool selection, and memory management |
-| Lost-in-the-middle | "Models forget stuff in the middle" | Empirical finding that LLMs attend better to the beginning and end of context, with 10-20% accuracy drop for information placed in the middle |
-| Token budget | "How many tokens you have left" | An explicit allocation of context window capacity across components (system prompt, tools, history, retrieval, generation) with per-component limits |
-| Dynamic context | "Loading stuff on the fly" | Assembling the context window differently for each query based on intent classification, relevant tool selection, and retrieval results |
-| History summarization | "Compressing the conversation" | Replacing verbatim old conversation turns with a concise summary, reducing token cost while preserving key information |
-| Tool pruning | "Only including relevant tools" | Classifying query intent and only including tool definitions that match, reducing tool token cost by 60-80% |
-| Long-term memory | "Remembering across sessions" | Facts and preferences stored in a database and retrieved at session start -- CLAUDE.md, ChatGPT Memory, and similar systems |
-| Episodic memory | "Remembering specific past events" | Past interactions stored as embeddings and retrieved when the current query is similar to a past conversation |
-| Generation budget | "Room for the answer" | Tokens reserved for the model's output -- if the context fills the window completely, the model has no room to respond |
+| 术语 | 通常的说法 | 实际含义 |
+|------|------------|----------|
+| 上下文窗口（context window） | "模型能读多少" | 模型在单次前向传播中处理的最多 token 数（输入 + 输出）——GPT-5 为 400K，Claude Opus 4.7 为 200K（beta 版 1M），Gemini 3 Pro 为 2M |
+| 上下文工程（context engineering） | "高级提示工程" | 决定什么进入上下文窗口、以什么顺序、什么优先级的学科——涵盖检索、压缩、工具选择和记忆管理 |
+| 中部迷失（lost-in-the-middle） | "模型会忘掉中间内容" | 实证发现：大语言模型（LLM）对上下文开头和结尾的注意力更高，中部信息准确率下降 10%-20% |
+| Token 预算（token budget） | "还剩多少 token" | 对上下文窗口容量在各组件（系统提示词、工具、历史、检索、生成）之间的显式分配，并设有每部分上限 |
+| 动态上下文（dynamic context） | "动态加载内容" | 根据意图分类、相关工具选择和检索结果，为每次查询不同地组装上下文窗口 |
+| 历史摘要（history summarization） | "压缩对话" | 用简洁摘要替代逐字的旧对话轮次，降低 token 成本同时保留关键信息 |
+| 工具剪枝（tool pruning） | "只包含相关工具" | 对查询意图分类，只纳入匹配的工具定义，可将工具 token 成本降低 60%-80% |
+| 长期记忆（long-term memory） | "跨会话记住" | 存储在数据库中、在会话开始时检索的事实与偏好——如 CLAUDE.md、ChatGPT Memory 等系统 |
+| 情景记忆（episodic memory） | "记住具体过去事件" | 以嵌入（embeddings）形式存储的过往交互，当当前查询与某次过去对话相似时被检索 |
+| 生成预算（generation budget） | "给答案留空间" | 为模型输出预留的 token——如果上下文完全填满窗口，模型就没有空间作答 |
 
-## Further Reading
+## 延伸阅读
 
-- [Liu et al., 2023 -- "Lost in the Middle: How Language Models Use Long Contexts"](https://arxiv.org/abs/2307.03172) -- the definitive study on position-dependent attention, showing that models struggle with information in the middle of long contexts
-- [Anthropic's Contextual Retrieval blog post](https://www.anthropic.com/news/contextual-retrieval) -- how Anthropic approaches context-aware chunk retrieval, reducing retrieval failure by 49%
-- [Simon Willison's "Context Engineering"](https://simonwillison.net/2025/Jun/27/context-engineering/) -- the blog post that named the discipline and distinguished it from prompt engineering
-- [LangChain documentation on RAG](https://python.langchain.com/docs/tutorials/rag/) -- practical implementation of retrieval-augmented generation as a context engineering pattern
-- [Greg Kamradt's Needle in a Haystack test](https://github.com/gkamradt/LLMTest_NeedleInAHaystack) -- the benchmark that revealed position-dependent retrieval failures across all major models
-- [Pope et al., "Efficiently Scaling Transformer Inference" (2022)](https://arxiv.org/abs/2211.05102) -- why context length drives memory and latency, and how KV cache, MQA, and GQA change the budget calculation.
-- [Agrawal et al., "SARATHI: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills" (2023)](https://arxiv.org/abs/2308.16369) -- the two phases of inference that make long prompts expensive in TTFT but cheap in TPOT; the ground truth behind context-packing tradeoffs.
-- [Ainslie et al., "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints" (EMNLP 2023)](https://arxiv.org/abs/2305.13245) -- the grouped-query attention paper that cut KV memory 8× in production decoders without quality loss.
+- [Liu et al., 2023 -- "Lost in the Middle: How Language Models Use Long Contexts"](https://arxiv.org/abs/2307.03172) -- 关于位置依赖注意力的权威研究，表明模型难以处理长上下文中间的信息
+- [Anthropic's Contextual Retrieval blog post](https://www.anthropic.com/news/contextual-retrieval) -- Anthropic 如何处理上下文感知分块检索，将检索失败率降低 49%
+- [Simon Willison's "Context Engineering"](https://simonwillison.net/2025/Jun/27/context-engineering/) -- 命名该学科并区分上下文工程与提示工程的文章
+- [LangChain documentation on RAG](https://python.langchain.com/docs/tutorials/rag/) -- 将检索增强生成作为上下文工程模式的实践实现
+- [Greg Kamradt's Needle in a Haystack test](https://github.com/gkamradt/LLMTest_NeedleInAHaystack) -- 揭示所有主流模型位置依赖检索失败的基准测试
+- [Pope et al., "Efficiently Scaling Transformer Inference" (2022)](https://arxiv.org/abs/2211.05102) -- 上下文长度如何驱动内存与延迟，以及 KV 缓存、MQA 和 GQA 如何改变预算计算
+- [Agrawal et al., "SARATHI: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills" (2023)](https://arxiv.org/abs/2308.16369) -- 解释长提示在 TTFT 中昂贵而在 TPOT 中便宜的推理两阶段，是上下文打包权衡的本质
+- [Ainslie et al., "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints" (EMNLP 2023)](https://arxiv.org/abs/2305.13245) -- 在生产级解码器中将 KV 内存降低 8 倍且无损质量的 grouped-query attention 论文

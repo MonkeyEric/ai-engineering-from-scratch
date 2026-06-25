@@ -1,146 +1,146 @@
-# Open-Weight VLM Recipes: What Actually Matters
+# 开源权重视觉语言模型（VLM）实践配方：真正重要的是什么
 
-> The 2024-2026 open-weight VLM literature is a forest of ablation tables. Apple's MM1 tested 13 combinations of image encoder, connector, and data mix. Allen AI's Molmo proved detailed human captions beat GPT-4V distillation. Cambrian-1 ran 20+ encoder comparisons. Idefics2 formalized the five-axis design space. Prismatic VLMs compared 27 training recipes on a controlled benchmark. Out of all that noise, a small set of results holds across papers: image encoder matters more than connector architecture, data mixture matters more than either, and detailed human captions beat distilled synthetic data. This lesson reads those tables so you do not have to.
+> 2024-2026 年的开源权重 VLM 文献充斥着消融表。苹果的 MM1 测试了图像编码器（image encoder）、连接器（connector）与数据混合 13 种组合；艾伦人工智能研究所的 Molmo 证明，详细的人工描述优于 GPT-4V 蒸馏；Cambrian-1 对比了 20 余种编码器；Idefics2 形式化了五轴设计空间；Prismatic VLMs 在受控基准上比较了 27 种训练配方。在一片嘈杂中，有一小撮结论跨论文成立：图像编码器比连接器架构更重要，数据混合又比前两者都重要，而详细的人工描述优于蒸馏得到的合成数据。本节课替你读懂这些表格，省去你亲自翻阅之苦。
 
-**Type:** Learn + lab
-**Languages:** Python (stdlib, ablation table parser + recipe picker)
-**Prerequisites:** Phase 12 · 05 (LLaVA baseline)
-**Time:** ~180 minutes
+**类型：** 学习 + 实验
+**语言：** Python（标准库，消融表解析器 + 配方选择器）
+**前置条件：** 第 12 阶段 · 05（LLaVA 基线）
+**时长：** 约 180 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Name the five-axis VLM design space: image encoder, connector, LLM, data mix, resolution schedule.
-- Read an MM1 / Idefics2 / Cambrian-1 ablation table and predict which knob moves a given benchmark.
-- Pick a recipe (encoder, connector, data, resolution) for a new VLM given a compute budget and task mix.
-- Explain why detailed human captions beat GPT-4V distillation at the same token count.
+- 说出 VLM 设计空间的五个轴：图像编码器、连接器、大语言模型（LLM）、数据混合、分辨率调度。
+- 阅读 MM1 / Idefics2 / Cambrian-1 的消融表，并预测调节哪个旋钮会带动某个基准。
+- 给定算力预算与任务组合，为新 VLM 挑选配方（编码器、连接器、数据、分辨率）。
+- 解释为什么在相同 token 数下，详细的人工描述会击败 GPT-4V 蒸馏。
 
-## The Problem
+## 问题所在
 
-Hundreds of open-weight VLMs exist. Most of the gap between "good" and "state-of-the-art" is not architecture. It is data, resolution schedule, and encoder choice. Knowing which knob to turn first when your model underperforms saves you a 5-million-GPU-hour mistake.
+开源权重的 VLM 有数百个。“好”与“最先进”之间的差距大多不在架构，而在数据、分辨率调度和编码器选择。知道模型表现不佳时该先拧哪个旋钮，能帮你避免五百万 GPU 小时的错误。
 
-The 2023 wave (LLaVA-1.5, InstructBLIP, MiniGPT-4) ran on caption-pair pretraining + LLaVA-Instruct-150k. Good baseline. Topped out around MMMU 35%.
+2023 年浪潮（LLaVA-1.5、InstructBLIP、MiniGPT-4）采用“图像-文本对预训练 + LLaVA-Instruct-150k”的范式。不错的基线，但 MMMU 大约在 35% 见顶。
 
-The 2024 wave (MM1, Idefics2, Molmo, Cambrian-1, Prismatic VLMs) ran exhaustive ablations. Results were surprising and practical.
+2024 年浪潮（MM1、Idefics2、Molmo、Cambrian-1、Prismatic VLMs）做了大量穷尽式消融。结论既出人意料又实用。
 
-## The Concept
+## 核心概念
 
-### The five-axis design space
+### 五轴设计空间
 
-Idefics2 (Laurençon et al., 2024) named the axes:
+Idefics2（Laurençon 等，2024）将设计空间归纳为五个轴：
 
-1. Image encoder. CLIP ViT-L/14, SigLIP SO400m/14, DINOv2 ViT-g/14, InternViT-6B. Encoders differ in patch size, resolution, and pretraining objective.
-2. Connector. MLP (2-4 layers), Q-Former (32 queries + cross-attn), Perceiver Resampler (64 queries), C-Abstractor (convolutional + bilinear pooling).
-3. Language model. Llama-3 8B / 70B, Mistral 7B, Phi-3, Gemma-2, Qwen2.5. LLM size is the dominant param cost.
-4. Training data. Caption pairs (CC3M, LAION), interleaved (OBELICS, MMC4), instruction (LLaVA-Instruct, ShareGPT4V, PixMo, Cauldron).
-5. Resolution schedule. Fixed 224/336/448, AnyRes, native dynamic. Ramped during training or constant.
+1. **图像编码器。** CLIP ViT-L/14、SigLIP SO400m/14、DINOv2 ViT-g/14、InternViT-6B。不同编码器的 patch 大小、分辨率与预训练目标各异。
+2. **连接器。** MLP（2-4 层）、Q-Former（32 个查询 + 交叉注意力）、Perceiver Resampler（64 个查询）、C-Abstractor（卷积 + 双线性池化）。
+3. **语言模型。** Llama-3 8B / 70B、Mistral 7B、Phi-3、Gemma-2、Qwen2.5。LLM 尺寸是主要参数成本。
+4. **训练数据。** 图像-文本对（CC3M、LAION）、交错数据（OBELICS、MMC4）、指令数据（LLaVA-Instruct、ShareGPT4V、PixMo、Cauldron）。
+5. **分辨率调度。** 固定 224/336/448、AnyRes、原生动态。训练期间逐步提升或保持不变。
 
-Every production VLM makes a choice on each axis. Most of the variance in MMMU scores is explained by axes 1, 4, and 5 — not by which connector you picked.
+每一款生产级 VLM 都要在这五个轴上做出选择。MMMU 分数的大部分差异可由轴 1、4、5 解释——与你选了哪种连接器关系不大。
 
-### Axis 1: encoder > connector
+### 轴 1：编码器 > 连接器
 
-MM1 Section 3.2 showed: swapping from CLIP ViT-L/14 to SigLIP SO400m/14 added 3+ points MMMU. Swapping the connector from MLP to Perceiver Resampler added less than 1 point. Idefics2 replicated: SigLIP > CLIP, Q-Former ≈ MLP ≈ Perceiver at the same token count.
+MM1 第 3.2 节表明：把编码器从 CLIP ViT-L/14 换成 SigLIP SO400m/14，MMMU 提升 3 分以上；把连接器从 MLP 换成 Perceiver Resampler，提升不到 1 分。Idefics2 复现了同样结论：SigLIP > CLIP，Q-Former ≈ MLP ≈ Perceiver（相同 token 数下）。
 
-Cambrian-1's "Cambrian Vision Encoders Match-Up" (Tong et al., 2024) ran 20+ encoders on a vision-centric benchmark (CV-Bench). The top of the leaderboard is a mix of DINOv2 and SigLIP; CLIP is middle of the pack; ImageBind and ViT-MAE are lower. The gap from CLIP ViT-L to DINOv2 ViT-g/14 is ~5-7 points on CV-Bench.
+Cambrian-1 的“Cambrian Vision Encoders Match-Up”（Tong 等，2024）在视觉中心型基准 CV-Bench 上测试了 20 余种编码器。榜首是 DINOv2 与 SigLIP 的混合；CLIP 居中；ImageBind 和 ViT-MAE 偏低。从 CLIP ViT-L 到 DINOv2 ViT-g/14，CV-Bench 差距约 5-7 分。
 
-The 2026 default encoder for open VLMs is SigLIP 2 SO400m/14 for semantic + dense features, sometimes concatenated with DINOv2 ViT-g/14 features (Cambrian's "Spatial Vision Aggregator" does this).
+2026 年开源 VLM 的默认编码器是 SigLIP 2 SO400m/14，用于语义 + 密集特征；若需分割/定位，可与 DINOv2 ViT-g/14 特征拼接（Cambrian 的“Spatial Vision Aggregator”即采用此做法）。
 
-### Axis 2: connector design is a wash
+### 轴 2：连接器设计影响不大
 
-MM1, Idefics2, Prismatic, and MM-Interleaved all reached the same conclusion: at a fixed visual-token count, connector architecture barely matters. A 2-layer MLP on mean-pooled patches performs within 1 point of a 32-query Q-Former at the same token budget.
+MM1、Idefics2、Prismatic、MM-Interleaved 得出一致结论：在固定视觉 token 数下，连接器架构几乎不影响结果。对 patch 做平均池化后接 2 层 MLP，与 32 查询的 Q-Former 在相同 token 预算下差距不到 1 分。
 
-What does matter is the token count. More visual tokens = more LLM compute = better performance up to a point, then diminishing returns. 64 tokens per image is too few for OCR. 576-1024 tokens is the sweet spot for most open VLMs. 2048+ helps only for documents and charts.
+真正重要的是 token 数。更多视觉 token = 更多 LLM 计算 = 更好表现，到一定程度后边际递减。64 token/图 对 OCR 太少；576-1024 token 是大多数开源 VLM 的甜点；2048+ 只对文档和图表有帮助。
 
-Q-Former vs MLP is a cost question, not a quality question: Q-Former caps tokens at 32-64 regardless of image resolution; MLP emits all patch tokens. For high-res inputs, Q-Former saves LLM context; for low-res, the difference is noise.
+Q-Former 与 MLP 之争是成本问题，不是质量问题：Q-Former 把 token 固定在 32-64，不受图像分辨率影响；MLP 会输出全部 patch token。高分辨率输入时，Q-Former 节省 LLM 上下文；低分辨率时，差异只是噪声。
 
-### Axis 3: LLM size sets the ceiling
+### 轴 3：LLM 尺寸决定上限
 
-Doubling the LLM from 7B to 13B reliably adds 2-4 points on MMMU across every VLM paper. At 70B you saturate most benchmarks. The VLM's multimodal reasoning ceiling is the LLM's text reasoning ceiling — the visual encoder can only feed it, not reason for it.
+把 LLM 从 7B 翻倍到 13B，几乎每篇 VLM 论文的 MMMU 都能稳定提升 2-4 分。到 70B 时大多数基准趋于饱和。VLM 的多模态推理天花板就是 LLM 的文本推理天花板——视觉编码器只能喂料，不能替它推理。
 
-This is why Qwen2.5-VL-72B and Claude Opus 4.7 crush MMMU-Pro and ScreenSpot-Pro: the language brain is huge. A 7B VLM cannot substitute for a 70B VLM through clever connector design.
+这就是 Qwen2.5-VL-72B 和 Claude Opus 4.7 能在 MMMU-Pro 与 ScreenSpot-Pro 上碾压的原因：语言大脑足够大。7B VLM 无法通过精巧的连接器设计替代 70B VLM。
 
-### Axis 4: data — detailed human captions beat distillation
+### 轴 4：数据——详细人工描述击败蒸馏
 
-Molmo + PixMo (Deitke et al., 2024) is the 2024 result everyone should read. Allen AI had human annotators describe images in 1-3 minute dense speech-to-text passes, yielding 712K densely-captioned images. No GPT-4V distillation anywhere in the training data.
+Molmo + PixMo（Deitke 等，2024）是 2024 年每个人都该读的一篇结果。艾伦人工智能研究所让标注员用 1-3 分钟对图像进行密集语音转写，得到 71.2 万张 densely-captioned 图像。训练数据中没有任何 GPT-4V 蒸馏。
 
-Molmo-72B beat Llama-3.2-90B-Vision on 11 of 11 benchmarks. The delta is not architecture — it is caption quality. Detailed human captions contain 5-10x more information per image than short web captions and stay factually grounded where GPT-4V distillation hallucinates.
+Molmo-72B 在 11/11 个基准上击败 Llama-3.2-90B-Vision。差距不在架构，而在描述质量。详细的人工描述每张图包含的信息量是短网页描述的 5-10 倍，且在 GPT-4V 蒸馏容易幻觉的地方保持事实 grounded。
 
-ShareGPT4V (Chen et al., 2023) and Cauldron (Idefics2) followed the same playbook with mixed human + GPT-4V captions. The trend is clear: for the 2026 frontier, caption density > caption quantity > distillation convenience.
+ShareGPT4V（Chen 等，2023）和 Cauldron（Idefics2）也遵循了“人工 + GPT-4V 混合描述”的 playbook。趋势很清楚：在 2026 年的前沿，描述密度 > 描述数量 > 蒸馏便利性。
 
-### Axis 5: resolution and its schedule
+### 轴 5：分辨率及其调度
 
-Idefics2's ablations: 384 -> 448 adds 1-2 points. 448 -> 980 with image splitting (AnyRes) adds another 3-5 on OCR benchmarks. Flat resolution training plateaus at medium accuracy; resolution ramping (start 224, finish 448 or native) trains faster and ends higher.
+Idefics2 的消融：384 → 448 提升 1-2 分；448 → 980 配合图像拆分（AnyRes）在 OCR 基准上再提升 3-5 分。固定分辨率训练在中等精度处见顶；分辨率 ramping（从 224 开始，到 448 或原生结束）训练更快、最终更高。
 
-Cambrian-1 ran a resolution vs tokens trade-off: at fixed compute, you can have more tokens at lower resolution or fewer tokens at higher resolution. Higher resolution wins for OCR; lower-res-more-tokens wins for general scene understanding.
+Cambrian-1 做了分辨率与 token 的权衡：固定算力下，可以选择低分辨率多 token，或高分辨率少 token。高分辨率在 OCR 上胜出；低分辨率多 token 在通用场景理解上胜出。
 
-The 2026 production recipe: train Stage 1 at 384 fixed, Stage 2 with dynamic resolution up to 1280 for OCR-heavy tasks.
+2026 年生产配方：Stage 1 固定 384，Stage 2 动态分辨率，最高 1280，面向 OCR 重任务。
 
-### The Prismatic controlled comparison
+### Prismatic 受控比较
 
-Prismatic VLMs (Karamcheti et al., 2024) is the paper that controlled all the axes. Same 13B LLM, same instruction data, same evaluation — only one axis varies at a time. Results:
+Prismatic VLMs（Karamcheti 等，2024）是唯一同时控制所有轴的论文。相同的 13B LLM、相同的指令数据、相同的评测——每次只变一个轴。结果：
 
-- Per-image visual-token count explains ~60% of variance.
-- Encoder choice explains ~20%.
-- Connector architecture explains ~5%.
-- Everything else (data mix, scheduler, LR) the remaining ~15%.
+- 每图视觉 token 数解释约 60% 的方差。
+- 编码器选择解释约 20%。
+- 连接器架构解释约 5%。
+- 其余（数据混合、调度器、学习率）解释约 15%。
 
-This is a rough decomposition, but it is the cleanest answer to "what should I ablate first" in the literature.
+这是一个粗略分解，但已是文献中对“我该先消融哪个轴”最干净的回答。
 
-### A picker for 2026
+### 2026 年配方选择器
 
-Given the evidence, the default open-VLM recipe for a new project in 2026:
+综合以上证据，2026 年新项目的默认开源 VLM 配方：
 
-- Encoder: SigLIP 2 SO400m/14 at native resolution with NaFlex, concatenated with DINOv2 ViT-g/14 for dense features if you need segmentation/grounding.
-- Connector: 2-layer MLP on patch tokens. Skip Q-Former unless you are token-constrained.
-- LLM: Qwen2.5 / Llama-3.1 / Gemma 2, 7B for cost, 70B for quality, picked by target latency.
-- Data: PixMo + ShareGPT4V + Cauldron, topped up with task-specific instruction data.
-- Resolution: dynamic (min 256, max 1280 pixels per long side).
-- Schedule: Stage 1 alignment (projector-only), Stage 2 full fine-tune, Stage 3 task-specific fine-tune.
+- **编码器：** SigLIP 2 SO400m/14，原生分辨率 + NaFlex；若需分割/定位，拼接 DINOv2 ViT-g/14 密集特征。
+- **连接器：** 2 层 MLP 作用于 patch token。除非 token 受限，否则跳过 Q-Former。
+- **LLM：** Qwen2.5 / Llama-3.1 / Gemma 2，7B 控制成本，70B 追求质量，按目标延迟选择。
+- **数据：** PixMo + ShareGPT4V + Cauldron，再补充任务特定指令数据。
+- **分辨率：** 动态（长边最小 256，最大 1280 像素）。
+- **调度：** Stage 1 对齐（仅 projector），Stage 2 全模型微调，Stage 3 任务特定微调。
 
-Every one of those defaults traces back to a measured ablation in the papers cited at the end of this lesson.
+上述每一项默认值都可追溯到本节课末尾引用的论文中的实测消融。
 
-## Use It
+## 动手使用
 
-`code/main.py` is an ablation table parser and recipe picker. It encodes the MM1 and Idefics2 ablation tables (condensed) and lets you query:
+`code/main.py` 是一个消融表解析器与配方选择器。它编码了（精简后的）MM1 与 Idefics2 消融表，支持查询：
 
-- "Given budget X and task Y, what recipe wins?"
-- "If I swap SigLIP for CLIP on a 7B Llama, what is the expected MMMU delta?"
-- "Which axis should I ablate first for an 80% confidence answer?"
+- “给定预算 X 与任务 Y，哪种配方胜出？”
+- “在 7B Llama 上把 SigLIP 换成 CLIP，MMMU 预期差多少？”
+- “想要 80% 置信度的答案，应该先消融哪个轴？”
 
-The output is a ranked recipe list with expected benchmark deltas and an "ablate first" recommendation.
+输出是按排名的配方列表，附带预期基准差值和“先消融哪个轴”的建议。
 
-## Ship It
+## 交付成果
 
-This lesson produces `outputs/skill-vlm-recipe-picker.md`. Given a target task mix, a compute budget, and a latency target, it emits a full recipe (encoder, connector, LLM, data mix, resolution schedule) with citations to the ablation that justifies each choice. Stops engineers from reinventing the Idefics2 ablation table every time a new VLM project starts.
+本节课产出 `outputs/skill-vlm-recipe-picker.md`。给定目标任务组合、算力预算和延迟目标，它会输出一份完整配方（编码器、连接器、LLM、数据混合、分辨率调度），并为每项选择附上支撑文献。避免工程师每次启动新 VLM 项目都重新发明 Idefics2 消融表。
 
-## Exercises
+## 练习题
 
-1. Read MM1 Section 3.2. For a fixed 2B LLM at budget 50M images, which encoder wins? Would the answer flip at 13B LLM? Why?
+1. 阅读 MM1 第 3.2 节。在固定 2B LLM、预算 5000 万张图时，哪种编码器胜出？如果换成 13B LLM，答案会反转吗？为什么？
 
-2. Cambrian-1 finds that concatenating DINOv2 + SigLIP outperforms either alone on vision-centric benchmarks but adds no signal on MMMU. Predict which benchmarks gain and which stay flat.
+2. Cambrian-1 发现，在视觉中心型基准上 DINOv2 + SigLIP 拼接优于任一单独使用，但在 MMMU 上没有增益。预测哪些基准会提升、哪些会持平。
 
-3. Your target is a mobile UI agent on a 2B LLM. Pick encoder, connector, resolution, and data mix. Justify each choice with a specific ablation table.
+3. 目标是在 2B LLM 上做一个移动端 UI 智能体。选择编码器、连接器、分辨率和数据混合，并用具体消融表为每项选择辩护。
 
-4. Molmo ships 4B and 72B models. The 4B is competitive with closed 7B VLMs; the 72B beats Llama-3.2-90B-Vision on 11/11 benchmarks. What does that tell you about the LLM-size plateau hypothesis?
+4. Molmo 发布 4B 与 72B 模型。4B 可与闭源 7B VLM 竞争；72B 在 11/11 基准上击败 Llama-3.2-90B-Vision。这对“LLM 尺寸瓶颈假说”说明什么？
 
-5. Design an ablation table to isolate data-mix quality from encoder quality on a 7B VLM. How many training runs minimum? Propose the four axis settings.
+5. 设计一张消融表，在 7B VLM 上隔离“数据混合质量”与“编码器质量”。最少需要几次训练运行？提出四个轴的设置。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|-----------------|------------------------|
-| Ablation | "Turning one knob" | Training multiple runs that differ in exactly one design-space axis, holding everything else constant |
-| Connector | "Bridge" / "projector" | Trainable module that maps vision encoder output into the LLM's token space (MLP, Q-Former, Perceiver) |
-| Detailed human caption | "Dense caption" | A multi-sentence human-written description (typically 80-300 tokens) richer than a web alt text |
-| Distillation | "GPT-4V captions" | Training data generated by a stronger proprietary VLM; convenient but prone to inherited hallucination |
-| AnyRes / dynamic res | "High-res path" | Strategy to feed images larger than the encoder's native resolution via tiling or M-RoPE |
-| Resolution ramp | "Curriculum" | Training schedule that starts low-resolution and increases, speeding alignment learning |
-| Vision-centric bench | "CV-Bench / BLINK" | Evaluation that stresses fine-grained visual perception rather than language-heavy reasoning |
-| PixMo | "Molmo's data" | Allen AI's 712K densely-captioned image dataset; human speech transcribed into dense captions |
+| 术语 | 人们怎么说 | 实际含义 |
+|------|-----------|----------|
+| 消融（ablation） | “拧一个旋钮” | 多次训练，只在某一个设计空间轴上不同，其余全部固定 |
+| 连接器（connector） | “桥梁” / “投影器” | 将视觉编码器输出映射到 LLM token 空间的可训练模块（MLP、Q-Former、Perceiver） |
+| 详细人工描述（detailed human caption） | “密集描述” | 多句人工撰写描述（通常 80-300 token），比网页 alt 文本更丰富 |
+| 蒸馏（distillation） | “GPT-4V 描述” | 用更强的专有 VLM 生成的训练数据；方便但容易继承幻觉 |
+| AnyRes / 动态分辨率 | “高分辨率路径” | 通过切片或 M-RoPE 喂入大于编码器原生分辨率的图像的策略 |
+| 分辨率 ramp（resolution ramp） | “课程学习” | 从低分辨率开始、逐步提升的训练调度，加速对齐学习 |
+| 视觉中心型基准（vision-centric bench） | “CV-Bench / BLINK” | 强调细粒度视觉感知而非偏重语言推理的评测 |
+| PixMo | “Molmo 的数据” | 艾伦人工智能研究所 71.2 万张 densely-captioned 图像数据集；人工语音转写为密集描述 |
 
-## Further Reading
+## 延伸阅读
 
-- [McKinzie et al. — MM1 (arXiv:2403.09611)](https://arxiv.org/abs/2403.09611)
-- [Laurençon et al. — Idefics2 / What matters building VLMs (arXiv:2405.02246)](https://arxiv.org/abs/2405.02246)
-- [Deitke et al. — Molmo and PixMo (arXiv:2409.17146)](https://arxiv.org/abs/2409.17146)
-- [Tong et al. — Cambrian-1 (arXiv:2406.16860)](https://arxiv.org/abs/2406.16860)
-- [Karamcheti et al. — Prismatic VLMs (arXiv:2402.07865)](https://arxiv.org/abs/2402.07865)
+- [McKinzie 等 — MM1 (arXiv:2403.09611)](https://arxiv.org/abs/2403.09611)
+- [Laurençon 等 — Idefics2 / What matters building VLMs (arXiv:2405.02246)](https://arxiv.org/abs/2405.02246)
+- [Deitke 等 — Molmo and PixMo (arXiv:2409.17146)](https://arxiv.org/abs/2409.17146)
+- [Tong 等 — Cambrian-1 (arXiv:2406.16860)](https://arxiv.org/abs/2406.16860)
+- [Karamcheti 等 — Prismatic VLMs (arXiv:2402.07865)](https://arxiv.org/abs/2402.07865)

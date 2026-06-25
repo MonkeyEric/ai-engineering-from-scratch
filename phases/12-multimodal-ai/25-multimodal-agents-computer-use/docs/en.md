@@ -1,165 +1,165 @@
-# Multimodal Agents and Computer-Use (Capstone)
+# 多模态智能体与计算机使用（综合项目）
 
-> The 2026 frontier product is a multimodal agent that reads screenshots, clicks buttons, navigates web UIs, fills forms, and completes workflows end-to-end. SeeClick and CogAgent (2024) proved the GUI-grounding primitive. Ferret-UI added mobile. ChartAgent introduced visual tool-use for charts. VisualWebArena and AgentVista (2026) are the benchmarks the frontier chases — and even Gemini 3 Pro and Claude Opus 4.7 score ~30% on AgentVista's hard tasks. This capstone pulls together every thread of Phase 12: perception (high-res VLM), reasoning (LLM with tool use), grounding (coordinate output), long-horizon memory, and evaluation.
+> 2026 年的前沿产品是一种多模态智能体（multimodal agent）：它能读取屏幕截图（screenshot）、点击按钮、浏览网页界面、填写表单，并端到端完成工作流。SeeClick 和 CogAgent（2024）证明了 GUI 定位（GUI grounding）这一原语的可行性。Ferret-UI 将其扩展到移动端。ChartAgent 引入了针对图表的视觉工具使用（visual tool use）。VisualWebArena 和 AgentVista（2026）是前沿模型竞相追逐的基准测试（benchmark）——即便是 Gemini 3 Pro 和 Claude Opus 4.7，在 AgentVista 的困难任务上也只能拿到约 30% 的分数。本综合项目（capstone）将串起第 12 阶段的所有主线：感知（高分辨率视觉语言模型 VLM）、推理（带工具使用的大语言模型 LLM）、定位（坐标输出）、长程记忆（long-horizon memory）和评估（evaluation）。
 
-**Type:** Capstone
-**Languages:** Python (stdlib, action schema + agent loop skeleton)
-**Prerequisites:** Phase 12 · 05 (LLaVA), Phase 12 · 09 (Qwen-VL JSON), Phase 14 (Agent Engineering)
-**Time:** ~240 minutes
+**类型：** 综合项目
+**语言：** Python（标准库、动作模式 + 智能体循环骨架）
+**前置知识：** 第 12 阶段 · 05（LLaVA）、第 12 阶段 · 09（Qwen-VL JSON）、第 14 阶段（智能体工程）
+**时间：** 约 240 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Design a multimodal agent loop: perceive → reason → act → observe → repeat.
-- Build a GUI grounding output schema (click coordinates, type text, scroll, drag) the VLM can emit as JSON.
-- Compare screenshot-only agents vs accessibility-tree agents vs hybrid agents.
-- Set up a multimodal agent benchmark evaluation on a small VisualWebArena slice.
+- 设计一个多模态智能体循环：感知 → 推理 → 执行 → 观察 → 重复。
+- 构建一个 GUI 定位输出模式（点击坐标、输入文本、滚动、拖拽），使视觉语言模型（VLM）能以 JSON 形式输出。
+- 比较仅屏幕截图智能体、可访问性树（accessibility tree）智能体与混合（hybrid）智能体。
+- 在 VisualWebArena 的一个小型切片上搭建多模态智能体基准测试（benchmark）评估。
 
-## The Problem
+## 问题
 
-A booking-site workflow: "find me a flight to Tokyo for April 15, aisle seat under $800, book it."
+一个订票网站工作流：“给我找一张 4 月 15 日飞往东京的航班，靠过道座位，票价 800 美元以下，预订它。”
 
-A multimodal agent needs to:
+一个多模态智能体需要：
 
-1. Take a screenshot of the browser.
-2. Parse the screenshot + URL + goal into a plan.
-3. Emit a structured action: click (at x,y), type "Tokyo" (at element E), scroll down, select (radio button).
-4. Apply the action to the browser.
-5. Observe the new state (next screenshot).
-6. Repeat until the task is done.
+1. 截取浏览器屏幕截图。
+2. 将屏幕截图、URL 与目标解析为计划。
+3. 输出结构化动作：点击（在 x,y 处）、输入“Tokyo”（在元素 E 处）、向下滚动、选择（单选按钮）。
+4. 将动作应用到浏览器。
+5. 观察新状态（下一张屏幕截图）。
+6. 重复直到任务完成。
 
-Each step is a multimodal VLM call. The VLM output must be parseable JSON. Errors compound across steps, so recovery matters.
+每一步都是一次多模态视觉语言模型（VLM）调用。VLM 的输出必须是可解析的 JSON。错误会在多步之间累积，因此恢复机制至关重要。
 
-## The Concept
+## 概念
 
-### GUI grounding — the primitive
+### GUI 定位——基础原语
 
-GUI grounding is: given a screenshot and a natural language instruction, output the (x, y) coordinate to click (or other action).
+GUI 定位（GUI grounding）是指：给定一张屏幕截图和一条自然语言指令，输出要点击（或执行其他动作）的 (x, y) 坐标。
 
-SeeClick (arXiv:2401.10935) was the first open result at scale: fine-tune a VLM on synthetic + real GUI data, output coordinates as plain text tokens. Works.
+SeeClick（arXiv:2401.10935）是首个达到规模的公开成果：在合成与真实 GUI 数据上微调视觉语言模型（VLM），以纯文本 token 形式输出坐标。效果不错。
 
-CogAgent (arXiv:2312.08914) added 1120x1120 high-resolution encoding for dense UIs. Score: ~84% on web navigation.
+CogAgent（arXiv:2312.08914）为密集界面增加了 1120×1120 高分辨率编码。在网页导航任务上得分约 84%。
 
-Ferret-UI (arXiv:2404.05719) focuses on mobile UIs, integrates with iOS accessibility data.
+Ferret-UI（arXiv:2404.05719）专注于移动界面，并与 iOS 可访问性（accessibility）数据集成。
 
-Output format is usually JSON:
+输出格式通常为 JSON：
 
 ```json
 {"action": "click", "x": 384, "y": 220, "element_desc": "Search button"}
 ```
 
-The `element_desc` helps recovery: if coordinates drift between screenshots, the semantic hint lets the system re-ground.
+`element_desc` 有助于恢复：如果坐标在不同屏幕截图之间发生漂移，语义提示可以让系统重新定位。
 
-### Action schemas
+### 动作模式
 
-A typical action schema has 6-10 action types:
+一个典型的动作模式（action schema）包含 6–10 种动作类型：
 
-- `click`: (x, y)
-- `type`: (text, x?, y?)
-- `scroll`: (direction, amount)
-- `drag`: (x0, y0, x1, y1)
-- `select`: (option_index)
-- `hover`: (x, y)
-- `navigate`: (url)
-- `wait`: (ms)
-- `done`: (success, explanation)
+- `click`：点击 (x, y)
+- `type`：输入文本 (text, x?, y?)
+- `scroll`：滚动 (direction, amount)
+- `drag`：拖拽 (x0, y0, x1, y1)
+- `select`：选择 (option_index)
+- `hover`：悬停 (x, y)
+- `navigate`：导航 (url)
+- `wait`：等待 (ms)
+- `done`：完成 (success, explanation)
 
-The agent emits one action per step. The browser wrapper executes and returns the new state.
+智能体每一步输出一个动作。浏览器封装层执行该动作并返回新状态。
 
-### Screenshot-only vs accessibility-tree
+### 仅屏幕截图 vs 可访问性树
 
-Two input modes:
+两种输入模式：
 
-- Screenshot-only: full image, no structural info. Most general; works on any app.
-- Accessibility tree: structured DOM / iOS accessibility info. Much more reliable for grounding; works where the tree is available.
-- Hybrid: both, with the tree as a reliable grounder for atomic actions and the screenshot for semantic context.
+- 仅屏幕截图（Screenshot-only）：完整图像，无结构信息。最通用；适用于任何应用。
+- 可访问性树（Accessibility tree）：结构化 DOM / iOS 可访问性信息。对定位（grounding）更可靠；在可获取树信息的场景适用。
+- 混合（Hybrid）：两者结合，以树作为原子动作的可靠定位依据，以屏幕截图提供语义上下文。
 
-Production agents use hybrid when possible. Browser automation (Selenium + accessibility) always has the tree; desktop apps sometimes do.
+生产级智能体在可能时采用混合模式。浏览器自动化（Selenium + accessibility）始终拥有树信息；桌面应用有时也有。
 
-### Long-horizon memory
+### 长程记忆
 
-A 20-step workflow generates 20 screenshots. The VLM's context fills up fast. Three compression strategies:
+一个 20 步的工作流会产生 20 张屏幕截图。视觉语言模型（VLM）的上下文很快就会填满。三种压缩策略：
 
-- Summary-chain: after every 5 steps, summarize what has happened, drop old screenshots.
-- Skip-frame: keep the first, last, and every 3rd screenshot.
-- Tool-recorded log: execute actions, keep a text log of what was done; don't re-look at old screenshots.
+- 摘要链（Summary-chain）：每 5 步总结一次已发生的事，丢弃旧屏幕截图。
+- 跳帧（Skip-frame）：保留第一张、最后一张以及每第 3 张屏幕截图。
+- 工具记录日志（Tool-recorded log）：执行动作，保留文本形式的操作日志；不再回看旧屏幕截图。
 
-Claude's computer-use API uses the log pattern. Simpler, more reliable.
+Claude 的计算机使用（computer-use）API 采用日志模式。更简单，也更可靠。
 
-### Visual tool use
+### 视觉工具使用
 
-ChartAgent (arXiv:2510.04514) introduces visual tool use for chart understanding: crop, zoom, OCR, call external detection. The agent can output "crop to region (100, 200, 300, 400) then call OCR" as a tool call. The tool returns text; the VLM continues reasoning.
+ChartAgent（arXiv:2510.04514）引入了针对图表理解的视觉工具使用（visual tool use）：裁剪、缩放、OCR、调用外部检测。智能体可以输出“裁剪到区域 (100, 200, 300, 400) 然后调用 OCR”这样的工具调用。工具返回文本，视觉语言模型（VLM）继续推理。
 
-This pattern generalizes: set-of-mark prompting, region annotation, and external detection tools all fit the same "output a tool call, receive a structured response" schema.
+这一模式具有通用性：标记集合提示（set-of-mark prompting）、区域标注（region annotation）和外部检测工具都遵循同一种“输出工具调用，接收结构化响应”的模式。
 
-### The 2026 benchmarks
+### 2026 年基准测试
 
-- ScreenSpot-Pro. GUI grounding on ~1k web screenshots. Open SOTA Qwen2.5-VL-72B ~85%. Frontier ~90%.
-- VisualWebArena. End-to-end web tasks (shop, forum, classifieds). Open SOTA ~20%. Gemini 3 Pro ~27%.
-- AgentVista (arXiv:2602.23166). The hardest 2026 benchmark. Realistic workflows across 12 domains. Frontier models score 27-40%; open models 10-20%.
-- WebArena / WebShop. Older benchmarks; saturated by frontier.
+- ScreenSpot-Pro。在约 1k 张网页屏幕截图上进行 GUI 定位（GUI grounding）。公开最佳水平（SOTA）Qwen2.5-VL-72B 约 85%。前沿模型约 90%。
+- VisualWebArena。端到端网页任务（购物、论坛、分类信息）。公开最佳水平（SOTA）约 20%。Gemini 3 Pro 约 27%。
+- AgentVista（arXiv:2602.23166）。2026 年最困难的基准测试（benchmark）。覆盖 12 个领域的真实工作流。前沿模型得分 27–40%；开源模型 10–20%。
+- WebArena / WebShop。较老的基准测试；已被前沿模型接近饱和。
 
-### Why it's still hard
+### 为什么仍然困难
 
-Agent performance bottlenecks:
+智能体性能瓶颈：
 
-1. Visual grounding at fine scale. "Click the small X" fails often at mobile resolution.
-2. Long-horizon planning. After 10 actions, the agent drifts from the goal.
-3. Error recovery. When a click fails (wrong button), detecting + recovering is rarely trained data.
-4. Cross-page context. Jumping between tabs or long forms loses state.
+1. 精细尺度视觉定位（visual grounding）。在移动分辨率下，“点击那个小 X”经常失败。
+2. 长程规划（long-horizon planning）。执行 10 个动作后，智能体会偏离目标。
+3. 错误恢复（error recovery）。当一次点击失败（点错按钮），检测并恢复的场景很少出现在训练数据中。
+4. 跨页面上下文。在标签页之间跳转或处理长表单时会丢失状态。
 
-Research directions: memory architectures, explicit replanning, multimodal verification (screenshot match for action success).
+研究方向：记忆架构、显式重新规划（replanning）、多模态验证（multimodal verification）（通过屏幕截图匹配判断动作是否成功）。
 
-### The capstone build-it
+### 综合项目动手实现
 
-The capstone task: build a computer-use agent that:
+本综合项目（capstone）任务：构建一个计算机使用（computer-use）智能体，它需要：
 
-1. Reads the HTML + screenshot of a booking-site mock page.
-2. Plans a multi-step sequence: search → select → fill form → submit.
-3. Emits JSON actions matching the action schema.
-4. Evaluates on a fixed 10-task slice.
+1. 读取订票网站模拟页面的 HTML + 屏幕截图。
+2. 规划多步序列：搜索 → 选择 → 填写表单 → 提交。
+3. 输出符合动作模式（action schema）的 JSON 动作。
+4. 在一个固定的 10 任务切片上评估。
 
-The lesson provides scaffold code that is easy to extend into a real browser.
+本课程提供了可轻松扩展到真实浏览器的脚手架代码。
 
-## Use It
+## 使用它
 
-`code/main.py` is the capstone scaffold:
+`code/main.py` 是综合项目（capstone）的脚手架：
 
-- Action schema JSON definition (10 actions).
-- Mock browser state as dict.
-- Agent loop skeleton: receive state, emit action, apply, loop.
-- 10-task mini-benchmark (synthetic pages) to measure end-to-end success rate.
-- Error-recovery hook for when an action fails.
+- 动作模式（action schema）JSON 定义（10 个动作）。
+- 以字典表示的模拟浏览器状态。
+- 智能体循环骨架：接收状态、输出动作、应用、循环。
+- 10 任务迷你基准测试（合成页面），用于衡量端到端成功率。
+- 动作失败时的错误恢复钩子。
 
-## Ship It
+## 交付它
 
-This lesson produces `outputs/skill-multimodal-agent-designer.md`. Given a computer-use product (domain, action set, evaluation target), designs the full agent loop, memory strategy, grounding mode, and expected benchmark score.
+本课程将产出 `outputs/skill-multimodal-agent-designer.md`。给定一个计算机使用（computer-use）产品（领域、动作集合、评估目标），设计完整的智能体循环、记忆策略、定位模式与预期基准测试（benchmark）分数。
 
-## Exercises
+## 练习
 
-1. Extend the action schema with a `screenshot_region` tool (crop + zoom). What tasks benefit?
+1. 用一个 `screenshot_region` 工具（裁剪 + 缩放）扩展动作模式（action schema）。哪些任务会受益？
 
-2. Read AgentVista (arXiv:2602.23166). Describe the hardest task category and why frontier models still fail.
+2. 阅读 AgentVista（arXiv:2602.23166）。描述最困难的任务类别，以及为什么前沿模型仍会失败。
 
-3. Long-horizon memory compression: design a summary-chain with ≤4 screenshots kept live, any number logged.
+3. 长程记忆（long-horizon memory）压缩：设计一个摘要链（summary-chain），最多保留 4 张实时屏幕截图，其余任意数量仅记录日志。
 
-4. Build an error-recovery hook: on action failure (button not found), what does the agent do next?
+4. 构建一个错误恢复（error recovery）钩子：当动作失败（未找到按钮）时，智能体下一步做什么？
 
-5. Compare screenshot-only Claude 4.7 to hybrid screenshot + accessibility-tree Qwen2.5-VL on 10 web tasks. Which wins on which tasks?
+5. 在 10 个网页任务上，比较仅屏幕截图（screenshot-only）的 Claude 4.7 与混合屏幕截图 + 可访问性树（accessibility tree）的 Qwen2.5-VL。在哪些任务上谁更胜一筹？
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|-----------------|------------------------|
-| GUI grounding | "Click coordinates" | Model outputs (x,y) for the target of an instruction on a screenshot |
-| Action schema | "Tool definitions" | JSON description of valid actions (click, type, scroll, drag) |
-| Accessibility tree | "Structured DOM" | Machine-readable UI hierarchy from browser/iOS APIs |
-| Hybrid agent | "Screenshot + tree" | Uses both image and structured info; more reliable than either alone |
-| Visual tool use | "Zoom/crop/detect" | Agent calls external vision tools (OCR, detection) mid-plan |
-| Summary-chain | "Memory compression" | Periodic text summaries replace long screenshot history |
-| VisualWebArena | "E2E web bench" | 2024 benchmark for end-to-end web tasks |
-| AgentVista | "2026 hard bench" | 12-domain realistic workflows; even Gemini 3 Pro scores ~30% |
+| 术语 | 人们的说法 | 实际含义 |
+|------|------------|----------|
+| GUI 定位 | “点击坐标” | 模型输出指令目标在屏幕截图上的 (x,y) 坐标 |
+| 动作模式 | “工具定义” | 有效动作（点击、输入、滚动、拖拽）的 JSON 描述 |
+| 可访问性树 | “结构化 DOM” | 来自浏览器 / iOS API 的机器可读界面层级 |
+| 混合智能体 | “屏幕截图 + 树” | 同时使用图像与结构化信息；比单独使用任一种更可靠 |
+| 视觉工具使用 | “缩放/裁剪/检测” | 智能体在规划过程中调用外部视觉工具（OCR、检测） |
+| 摘要链 | “记忆压缩” | 定期文本摘要替代冗长的屏幕截图历史 |
+| VisualWebArena | “端到端网页基准” | 2024 年端到端网页任务基准测试 |
+| AgentVista | “2026 年困难基准” | 覆盖 12 个领域的真实工作流；即便 Gemini 3 Pro 也仅约 30% |
 
-## Further Reading
+## 延伸阅读
 
 - [Cheng et al. — SeeClick (arXiv:2401.10935)](https://arxiv.org/abs/2401.10935)
 - [Hong et al. — CogAgent (arXiv:2312.08914)](https://arxiv.org/abs/2312.08914)

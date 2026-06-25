@@ -1,152 +1,148 @@
-# Embodied VLAs: RT-2, OpenVLA, π0, GR00T
+# 具身 VLA：RT-2、OpenVLA、π0 与 GR00T
 
-> The first time a model read a recipe off a website and executed it in a kitchen robot was RT-2 (Google DeepMind, July 2023). RT-2 discretized actions as text tokens, co-fine-tuned a VLM on web data plus robot-action data, and proved that web-scale vision-language knowledge transfers to robotic control. OpenVLA (June 2024) shipped the open 7B reference. Physical Intelligence's π0 series (2024-2025) added flow-matching action experts. NVIDIA's GR00T N1 (March 2025) delivered dual-system (System 1 / System 2) control for humanoid robots at scale. The VLA primitive — vision-language-action, a single model that sees, reads, and acts — is the bridge between this phase's understanding models and the autonomous systems in Phase 15.
+> 首次让模型从网页读取食谱并在厨房机器人上执行的是 RT-2（Google DeepMind，2023 年 7 月）。RT-2 将动作离散化为文本词元（token），在网页数据与机器人动作数据的混合数据上协同微调 VLM，并证明了网页规模的视觉-语言知识可以迁移到机器人控制。OpenVLA（2024 年 6 月）发布了开放的 70 亿参数参考实现。Physical Intelligence 的 π0 系列（2024-2025）加入了流匹配动作专家。NVIDIA 的 GR00T N1（2025 年 3 月）为大规模人形机器人提供了双系统（系统 1 / 系统 2）控制。VLA 原语——视觉-语言-动作（Vision-Language-Action），即一个能看、能读、能动的单一模型——是本阶段理解模型与第 15 阶段自主系统之间的桥梁。
 
-**Type:** Learn
-**Languages:** Python (stdlib, action tokenizer + VLA inference skeleton)
-**Prerequisites:** Phase 12 · 05 (LLaVA), Phase 15 (Autonomous Systems, referenced)
-**Time:** ~180 minutes
+**类型：** 学习
+**语言：** Python（标准库，动作词元化 + VLA 推理骨架）
+**前置知识：** 第 12 阶段 · 05（LLaVA），第 15 阶段（自主系统，引用）
+**时间：** 约 180 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Describe action tokenization: discrete bin encoding (RT-2), FAST efficient action tokens, continuous flow-matching actions (π0).
-- Explain why co-fine-tuning on web + robot data preserves general-knowledge transfer to novel tasks.
-- Compare OpenVLA (open 7B Llama+VLM), π0 (flow-matching), and GR00T N1 (dual-system) on the same robot task.
-- Name the Open X-Embodiment dataset and its role as the RT-X training corpus.
+- 描述动作词元化（action tokenization）：离散分箱编码（RT-2）、FAST 高效动作词元、连续流匹配动作（π0）。
+- 解释为何在网页 + 机器人数据上协同微调能够保留对新任务的一般知识迁移。
+- 在同一机器人任务上比较 OpenVLA（开放 7B Llama+VLM）、π0（流匹配）与 GR00T N1（双系统）。
+- 说出 Open X-Embodiment 数据集及其作为 RT-X 训练语料库的角色。
 
-## The Problem
+## 问题背景
 
-A robot that does chores from natural language instructions has been a research target since the 1970s. The 2020s answer: a vision-language-action (VLA) model. Same VLM architecture used for VQA, but output is actions (joint torques, end-effector poses, discrete commands) instead of text.
+自 1970 年代以来，能根据自然语言指令做家务的机器人一直是研究目标。2020 年代的答案是：视觉-语言-动作（Vision-Language-Action，VLA）模型。它使用与视觉问答（VQA）相同的 VLM 架构，但输出的是动作（关节力矩、末端执行器位姿、离散命令）而非文本。
 
-Challenges specific to VLAs:
+VLA 特有的挑战：
 
-1. Action spaces are continuous (joint angles, forces) and high-dimensional (7-DOF arm + 3-DOF gripper = 10 dims at 30 Hz).
-2. Robot-specific training data is scarce. Open X-Embodiment has ~1M trajectories; web text-image is 5B+.
-3. Control frequency matters. 30 Hz control loop means 33ms budget per action.
-4. Safety. A wrong action damages hardware, humans, or property.
+1. 动作空间是连续的（关节角度、力）且高维（7 自由度手臂 + 3 自由度夹爪 = 10 维，30 Hz）。
+2. 机器人专用训练数据稀缺。Open X-Embodiment 有约 100 万条轨迹；网页图文数据达 50 亿以上。
+3. 控制频率很重要。30 Hz 控制环意味着每个动作只有 33 毫秒预算。
+4. 安全性。错误动作可能损坏硬件、伤害人类或破坏财物。
 
-## The Concept
+## 核心概念
 
-### Action tokenization (RT-2)
+### 动作词元化（RT-2）
 
-RT-2's trick: represent each joint target as a quantized text token. Discretize the normalized [-1, 1] range into 256 bins, map each bin to a vocabulary ID. A 10-DOF action becomes 10 tokens at each control step.
+RT-2 的技巧：将每个关节目标表示为量化后的文本词元（token）。把归一化的 [-1, 1] 范围离散成 256 个分箱，每个分箱映射到一个词表 ID。一个 10 自由度（DOF）的动作在每一步控制中变成 10 个词元。
 
-Co-fine-tune a PaLM-X VLM on a mixture:
+在以下混合数据上协同微调 PaLM-X VLM：
 
-- Web image-text pairs (captioning, VQA).
-- Robot demonstrations, action as tokens.
+- 网页图文对（图像描述、VQA）。
+- 机器人演示，动作以词元形式表示。
 
-The model sees "pick up the red cube" (language) → image (vision) → 10-token action sequence (discretized joint targets). Web pretraining preserves general-knowledge transfer: RT-2 can follow "move towards the fast-moving object" even though "fast-moving" isn't in training data.
+模型看到 "pick up the red cube"（语言）→ 图像（视觉）→ 10 个词元的动作序列（离散关节目标）。网页预训练保留了一般知识迁移：RT-2 能够理解 "move towards the fast-moving object"，即便训练数据中从未出现 "fast-moving"。
 
-Inference at 3-5 Hz in the RT-2 paper, limited by VLM autoregressive decode.
+RT-2 论文中的推理速度为 3-5 Hz，受限于 VLM 的自回归解码。
 
-### OpenVLA — the open 7B reference
+### OpenVLA——开放的 70 亿参数参考实现
 
-OpenVLA (Kim et al., June 2024) is the open-weights RT-2 equivalent. 7B Llama backbone, DINOv2 + SigLIP dual vision encoder, action tokenization over 256 bins.
+OpenVLA（Kim 等人，2024 年 6 月）是开放权重的 RT-2 等价实现。70 亿参数 Llama 骨干网络、DINOv2 + SigLIP 双视觉编码器、基于 256 个分箱的动作词元化。
 
-Trained on Open X-Embodiment (970k trajectories across 22 robots). Ships with LoRA fine-tuning support for adapting to new robots.
+在 Open X-Embodiment（22 个机器人、97 万条轨迹）上训练。附带 LoRA 微调支持，可适配新机器人。
 
-Inference: 4-5 Hz on an A100 with quantization. Fast enough for slow manipulation, not for high-frequency control.
+推理：在 A100 上经量化后可达 4-5 Hz。对慢速操作足够快，但不足以做高频控制。
 
-### FAST tokenizer — faster action decode
+### FAST 词元化器——更快的动作解码
 
-Pertsch et al. (2024) showed that discrete-bin tokenization is inefficient — most actions cluster in a small region of bin-space. FAST (Frequency-domain Action Sequence Tokenizer) compresses action sequences via DCT and quantizes the coefficients.
+Pertsch 等人（2024）指出离散分箱词元化效率低下——大多数动作聚集在词元空间的一小块区域。FAST（Frequency-domain Action Sequence Tokenizer，频域动作序列词元化器）通过 DCT（离散余弦变换）压缩动作序列并量化其系数。
 
-A 30-step action trajectory becomes ~10 FAST tokens instead of 300 discrete-bin tokens. Inference speeds up 3-5x without quality loss.
+一条 30 步的动作轨迹变成约 10 个 FAST 词元，而非 300 个离散分箱词元。推理速度提升 3-5 倍且质量无损。
 
-### π0 and flow-matching actions
+### π0 与流匹配动作
 
-Physical Intelligence's π0 (Black et al., October 2024) replaces discrete action tokens with a flow-matching action expert:
+Physical Intelligence 的 π0（Black 等人，2024 年 10 月）用流匹配动作专家取代了离散动作词元：
 
-- A small action transformer reads the VLM's hidden states and outputs a continuous 50-step action sequence via rectified flow.
-- The action head trains with flow-matching loss; VLM pretraining stays unchanged.
-- Inference: full action sequence emitted in ~5 denoising steps, effectively 50 Hz control.
+- 一个小的动作 Transformer 读取 VLM 的隐藏状态，并通过整流流（rectified flow）输出连续的 50 步动作序列。
+- 动作头（action head）使用流匹配损失（flow-matching loss）训练；VLM 预训练保持不变。
+- 推理：完整的动作序列在约 5 次去噪步骤内生成，等效于 50 Hz 控制。
 
-π0's claim: beats OpenVLA and Octo on a wide suite of manipulation tasks. The continuous-action formulation preserves smoothness that discretization destroys.
+π0 的宣称：在大量操作任务上击败 OpenVLA 与 Octo。连续动作形式保留了离散化会破坏的平滑性。
 
-π0.5 and π0-FAST are incremental upgrades. π0-FAST combines FAST tokenization with flow matching.
+π0.5 与 π0-FAST 是增量升级。π0-FAST 将 FAST 词元化与流匹配相结合。
 
-### GR00T N1 — dual-system for humanoids
+### GR00T N1——面向人形机器人的双系统
 
-NVIDIA's GR00T N1 (March 2025) is built for humanoid robots (>30 DOF, full-body):
+NVIDIA 的 GR00T N1（2025 年 3 月）专为高自由度（>30 DOF）全身人形机器人设计：
 
-- System 2: a large VLM reading scene + instruction, producing high-level subgoals at ~1 Hz.
-- System 1: a small action-head transformer producing low-level 50-100 Hz joint commands conditioned on the subgoals.
+- 系统 2：大型 VLM 读取场景与指令，以约 1 Hz 的频率生成高层子目标。
+- 系统 1：小型动作头 Transformer 以子目标为条件，生成 50-100 Hz 的低层关节命令。
 
-The split maps to Kahneman's fast-and-slow thinking: System 2 plans, System 1 acts. Benefits: slow VLM-sized planning does not block fast control; System 1 stays small for latency.
+这种划分对应卡尼曼（Kahneman）的“快思考与慢思考”：系统 2 负责规划，系统 1 负责执行。好处在于：慢速的大型 VLM 规划不会阻塞快速控制；系统 1 保持小巧以降低延迟。
 
-GR00T N1.7 (late 2025) improves data scaling. GR00T fine-tunes with sim-to-real data from Omniverse.
+GR00T N1.7（2025 年末）改进了数据规模。GR00T 使用 Omniverse 的仿真到真实（sim-to-real）数据进行微调。
 
 ### Open X-Embodiment
 
-The training data. RT-X (October 2023) assembled 22 datasets covering 1M trajectories across 22 robots. Open X-Embodiment is the corpus everyone uses:
+训练数据。RT-X（2023 年 10 月）整合了 22 个数据集，涵盖 22 个机器人的约 100 万条轨迹。Open X-Embodiment 是人人都在使用的语料库：
 
-- ALOHA / Bridge V2 / Droid / RT-2 Kitchen / Language Table.
-- Each sample: (robot state, camera views, instruction, action sequence).
-- Training hygiene: unify action space, normalize joint ranges, resize cameras.
+- ALOHA / Bridge V2 / Droid / RT-2 Kitchen / Language Table。
+- 每个样本：（机器人状态、相机视角、指令、动作序列）。
+- 训练卫生：统一动作空间、归一化关节范围、调整相机分辨率。
 
-OpenVLA and π0 train on Open X-Embodiment. Domain gap to any specific robot is closed by LoRA fine-tuning on 100-1000 task-specific demos.
+OpenVLA 与 π0 均在 Open X-Embodiment 上训练。与任何具体机器人之间的领域差距通过 100-1000 条任务特定演示上的 LoRA 微调来弥补。
 
-### Co-fine-tuning vs robot-only
+### 协同微调 vs 仅机器人数据
 
-Co-fine-tuning mixes web VQA data with robot trajectories. The ratio matters: too much VQA and the model forgets actions; too much robot data and the model loses general knowledge.
+协同微调将网页 VQA 数据与机器人轨迹混合。比例很关键：VQA 太多，模型会忘记动作；机器人数据太多，模型会丢失一般知识。
 
-RT-2's ratio: ~1:1. OpenVLA: ~0.5:1 web-to-robot. π0: similar. The precise ratio is a hyperparameter to tune per dataset size.
+RT-2 的比例约为 1:1。OpenVLA 的网页到机器人比例约为 0.5:1。π0 类似。精确比例是需按数据集大小调整的超参数。
 
-Robot-only training produces task-specific models that fail on out-of-distribution instructions. Co-fine-tuning is the difference between "pick up the red cube (in demo)" and "pick up the third largest object from the left (novel phrasing)."
+仅机器人数据训练会生成任务专用模型，在分布外指令上失败。协同微调决定了模型是只能“捡起红色方块（演示中见过）”，还是能“捡起从左数第三大的物体（新颖表达）”。
 
-### Safety and action limits
+### 安全性与动作限制
 
-Every production VLA ships with:
+每个生产级 VLA 都配备：
 
-- Hard joint limits (can't torque past spec).
-- Velocity limits (soft clipping).
-- Workspace bounds (end-effector cannot leave the table).
-- Human-in-the-loop approval for novel tasks.
+- 硬关节限位（不能超过规格扭矩）。
+- 速度限制（软裁剪）。
+- 工作空间边界（末端执行器不能离开桌面）。
+- 新任务需人类在环审批。
 
-These sit outside the VLA as control-layer checks. The VLA's output is a suggestion, not a command.
+这些位于 VLA 之外，作为控制层检查。VLA 的输出是建议，而非命令。
 
-## Use It
+## 动手实践
 
-`code/main.py`:
+`code/main.py`：
 
-- Implements 256-bin action tokenization and de-tokenization.
-- Sketches a FAST tokenizer based on DCT + quantization.
-- Compares token-count per action step across (discrete-bin, FAST, continuous-flow).
-- Prints a lineage summary of RT-2 → OpenVLA → π0 → GR00T.
+- 实现 256 分箱动作词元化与反词元化。
+- 勾勒基于 DCT + 量化的 FAST 词元化器。
+- 比较（离散分箱、FAST、连续流）三种方式每动作步的词元数量。
+- 打印 RT-2 → OpenVLA → π0 → GR00T 的演进脉络摘要。
 
-## Ship It
+## 产出成果
 
-This lesson produces `outputs/skill-vla-action-format-picker.md`. Given a robot task (manipulation, navigation, humanoid whole-body), picks between discrete-bin + RT-2, FAST + OpenVLA, flow-matching + π0, or dual-system + GR00T.
+本课产出 `outputs/skill-vla-action-format-picker.md`。给定一项机器人任务（操作、导航、人形全身），在离散分箱 + RT-2、FAST + OpenVLA、流匹配 + π0、双系统 + GR00T 之间做出选择。
 
-## Exercises
+## 练习题
 
-1. A 10-DOF arm at 30 Hz control rate. Discrete-bin tokenization at 256 bins emits how many tokens per second? Can a 7B VLM keep up?
+1. 一个 10 自由度手臂，控制频率 30 Hz。256 分箱的离散词元化每秒产生多少词元？70 亿参数 VLM 能跟得上吗？
+2. FAST 词元化把 30 步轨迹压缩到约 10 个词元。如果轨迹包含高频运动（例如击鼓），会损失什么？
+3. π0 的流匹配头在约 5 步内去噪。与 OpenVLA 4-5 Hz 的自回归解码相比，吞吐量如何？
+4. GR00T 的系统 1 / 系统 2 划分对应卡尼曼理论。请提出另一种划分（系统 3？），可能有助于双足行走。
+5. 阅读 Open X-Embodiment 论文第 4 节关于数据集整理的内容。列出防止领域泄漏的三条整理规则。
 
-2. FAST tokenization compresses 30-step trajectories to ~10 tokens. What does the user lose if the trajectory has high-frequency motion (e.g., drumming)?
+## 关键术语
 
-3. π0's flow-matching head denoises in ~5 steps. Compare throughput to OpenVLA's autoregressive decode at 4-5 Hz.
+| 术语 | 人们常说 | 实际含义 |
+|------|----------|----------|
+| VLA | "视觉-语言-动作" | 接收图像 + 指令并输出动作命令的模型 |
+| 动作词元化 | "离散分箱" | 将连续关节目标按维度量化为 256 个分箱，每个分箱对应一个词表 ID |
+| FAST 词元化器 | "频域动作词元" | 通过 DCT + 量化将 30 步轨迹压缩到约 10 个词元 |
+| 协同微调 | "混合网页 + 机器人" | 同时用网页 VQA 数据和机器人演示训练，以保留一般知识 |
+| 流匹配动作头 | "π0 连续输出" | 小型 Transformer，通过整流流输出 50 步动作序列 |
+| 系统 1 / 系统 2 | "双系统控制" | 大型 VLM 慢速规划，小型动作头快速执行；GR00T 模式 |
+| Open X-Embodiment | "RT-X 数据集" | 100 万条轨迹的跨机器人数据集；训练语料库 |
 
-4. GR00T's System 1 / System 2 split maps to Kahneman. Propose a different split (System 3?) that might help bipedal walking.
+## 扩展阅读
 
-5. Read Open X-Embodiment Section 4 on dataset curation. Name the three curation rules that prevent domain leakage.
-
-## Key Terms
-
-| Term | What people say | What it actually means |
-|------|-----------------|------------------------|
-| VLA | "Vision-language-action" | Model that takes image + instruction and outputs action commands |
-| Action tokenization | "Discrete bins" | Quantize continuous joint targets into 256 bins per dim, each a vocab ID |
-| FAST tokenizer | "Frequency action tokens" | DCT + quantize to compress 30-step trajectories to ~10 tokens |
-| Co-fine-tune | "Mix web + robot" | Train on web VQA data alongside robot demos to preserve general knowledge |
-| Flow-matching action head | "π0 continuous output" | Small transformer that outputs a 50-step action sequence via rectified flow |
-| System 1 / System 2 | "Dual-system control" | Large VLM plans slowly, small action head acts quickly; GR00T pattern |
-| Open X-Embodiment | "RT-X dataset" | 1M-trajectory cross-robot dataset; the training corpus |
-
-## Further Reading
-
-- [Brohan et al. — RT-2 (arXiv:2307.15818)](https://arxiv.org/abs/2307.15818)
-- [Kim et al. — OpenVLA (arXiv:2406.09246)](https://arxiv.org/abs/2406.09246)
-- [Black et al. — π0 (arXiv:2410.24164)](https://arxiv.org/abs/2410.24164)
-- [NVIDIA — GR00T N1 (arXiv:2503.14734)](https://arxiv.org/abs/2503.14734)
-- [Open X-Embodiment Collab — RT-X (arXiv:2310.08864)](https://arxiv.org/abs/2310.08864)
+- [Brohan 等人 —— RT-2（arXiv:2307.15818）](https://arxiv.org/abs/2307.15818)
+- [Kim 等人 —— OpenVLA（arXiv:2406.09246）](https://arxiv.org/abs/2406.09246)
+- [Black 等人 —— π0（arXiv:2410.24164）](https://arxiv.org/abs/2410.24164)
+- [NVIDIA —— GR00T N1（arXiv:2503.14734）](https://arxiv.org/abs/2503.14734)
+- [Open X-Embodiment 合作组 —— RT-X（arXiv:2310.08864）](https://arxiv.org/abs/2310.08864)

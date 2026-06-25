@@ -1,144 +1,144 @@
-# MCP Transports — stdio vs Streamable HTTP vs SSE Migration
+# MCP 传输层 —— stdio、Streamable HTTP 与 SSE 迁移
 
-> stdio works locally and nowhere else. Streamable HTTP (2025-03-26) is the remote standard. The old HTTP+SSE transport is deprecated and being removed in mid-2026. Picking the wrong transport costs a migration; picking the right one buys a remote-hostable MCP server with session continuity and DNS-rebinding protection.
+> stdio 只适用于本地。Streamable HTTP（2025-03-26）是远程标准。旧的 HTTP+SSE 传输层已被弃用，并将在 2026 年中期移除。选错传输层意味着后续要迁移；选对传输层则能得到一个支持远程托管、会话保持和 DNS 重绑防护的 MCP 服务器。
 
-**Type:** Learn
-**Languages:** Python (stdlib, Streamable HTTP endpoint skeleton)
-**Prerequisites:** Phase 13 · 07, 08 (MCP server and client)
-**Time:** ~45 minutes
+**类型：** 学习  
+**语言：** Python（标准库，Streamable HTTP 端点骨架）  
+**前置条件：** Phase 13 · 07、08（MCP 服务器与客户端）  
+**时长：** 约 45 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Pick between stdio and Streamable HTTP based on deployment shape (local vs remote, single-process vs fleet).
-- Implement the Streamable HTTP single-endpoint pattern: POST for requests, GET for session stream.
-- Enforce `Origin` validation and session-id semantics to defeat DNS-rebinding.
-- Migrate a legacy HTTP+SSE server to Streamable HTTP before the mid-2026 removal deadlines.
+- 根据部署形态（本地 vs 远程、单进程 vs 集群）在 stdio 与 Streamable HTTP 之间做出选择。
+- 实现 Streamable HTTP 单端点模式：POST 用于请求，GET 用于会话流。
+- 强制执行 `Origin` 校验和会话 ID 语义，以防御 DNS 重绑攻击。
+- 在 2026 年中期移除截止期限前，将旧版 HTTP+SSE 服务器迁移到 Streamable HTTP。
 
-## The Problem
+## 问题背景
 
-The first MCP remote transport (2024-11) was HTTP+SSE: two endpoints, one for the client's POSTs and one Server-Sent-Events channel for the server-to-client stream. It worked. It was also clumsy: two endpoints per session, broken caches in front of some CDNs, and a hard dependency on long-lived SSE connections that some WAFs terminate aggressively.
+最早的 MCP 远程传输层（2024-11）是 HTTP+SSE：两个端点，一个用于客户端 POST，另一个 Server-Sent-Events 通道用于服务器到客户端的流。它能跑。但也很笨拙：每个会话两个端点，某些 CDN 前的缓存会出问题，并且严重依赖长期存活的 SSE 连接，而某些 WAF 会激进地终止这些连接。
 
-The 2025-03-26 spec replaced it with Streamable HTTP: one endpoint, POST for client requests, GET for establishing a session stream, both sharing a `Mcp-Session-Id` header. Every server built or migrated since then uses Streamable HTTP. The old SSE mode is being deprecated — Atlassian Rovo removed it June 30, 2026; Keboola April 1, 2026; most remaining enterprise servers by end of 2026.
+2025-03-26 的规范用 Streamable HTTP 取而代之：一个端点，POST 用于客户端请求，GET 用于建立会话流，两者共享 `Mcp-Session-Id` 头部。此后构建或迁移的每个服务器都使用 Streamable HTTP。旧的 SSE 模式正在被弃用 —— Atlassian Rovo 于 2026 年 6 月 30 日移除；Keboola 于 2026 年 4 月 1 日移除；大多数剩余的企业服务器将在 2026 年底前移除。
 
-And stdio still matters for local servers. Claude Desktop, VS Code, and every IDE-shaped client spawn servers via stdio. The right mental model: stdio for "this machine", Streamable HTTP for "over the network". No cross-over.
+stdio 对于本地服务器仍然重要。Claude Desktop、VS Code 以及所有 IDE 形态的客户端都通过 stdio 派生服务器。正确的思维模型是：stdio 用于“本机”，Streamable HTTP 用于“跨网络”。不要混用。
 
-## The Concept
+## 核心概念
 
 ### stdio
 
-- Child-process transport. Client spawns server, communicates via stdin/stdout.
-- One JSON object per line. Newline-delimited.
-- No session id; process identity is the session.
-- No auth needed (the child inherits the parent's trust boundary).
-- Never use for remote servers — you would need SSH or socat to tunnel, at which point use Streamable HTTP.
+- 子进程传输层。客户端派生服务器，通过 stdin/stdout 通信。
+- 每行一个 JSON 对象，换行分隔。
+- 没有会话 ID；进程身份就是会话。
+- 无需认证（子进程继承父进程的信任边界）。
+- 永远不要用于远程服务器 —— 如果要用 SSH 或 socat 做隧道，那不如直接用 Streamable HTTP。
 
 ### Streamable HTTP
 
-Single endpoint `/mcp` (or any path). Supports three HTTP methods:
+单个端点 `/mcp`（或任意路径）。支持三种 HTTP 方法：
 
-- **POST /mcp.** Client sends a JSON-RPC message. Server replies with either a single JSON response, or an SSE stream of one-or-more responses (useful for batched responses and notifications related to that request).
-- **GET /mcp.** Client opens a long-lived SSE channel. Server uses it for server-to-client requests (sampling, notifications, elicitation).
-- **DELETE /mcp.** Client explicitly terminates the session.
+- **POST /mcp。** 客户端发送 JSON-RPC 消息。服务器返回单个 JSON 响应，或者一个 SSE 流（包含一个或多个响应，适用于批量响应和与该请求相关的通知）。
+- **GET /mcp。** 客户端打开一个长期存活的 SSE 通道。服务器用它向客户端发送请求（sampling、通知、elicitation）。
+- **DELETE /mcp。** 客户端显式终止会话。
 
-Sessions are identified by the `Mcp-Session-Id` header the server sets on the first response and the client echoes on every subsequent request. Session ids MUST be cryptographically random (128+ bits); client-chosen ids are rejected for safety.
+会话由 `Mcp-Session-Id` 头部标识，服务器在首次响应时设置该头部，客户端在后续每次请求时回传。会话 ID 必须是加密随机的（128 位以上）；出于安全考虑，客户端选择的 ID 会被拒绝。
 
-### Single endpoint vs two
+### 单端点 vs 双端点
 
-Two-endpoint mode from the old spec is still callable in 2026 — the spec declares it "legacy compatible". But all new servers should be single-endpoint. The official SDKs emit single-endpoint; use the legacy mode only when talking to an unmigrated remote.
+旧规范的双端点模式在 2026 年仍然可调用 —— 规范将其声明为“兼容遗留”。但所有新服务器都应为单端点。官方 SDK 输出单端点；仅当与未迁移的远程服务器通信时才使用遗留模式。
 
-### `Origin` validation and DNS-rebinding
+### `Origin` 校验与 DNS 重绑
 
-Browsers are not MCP clients (today), but an attacker can craft a webpage that convinces a browser to POST to `localhost:1234/mcp` — where the user's local MCP server listens. If the server does not check `Origin`, the browser's same-origin policy will not save it because `Origin: http://evil.com` is valid cross-origin.
+浏览器（目前）不是 MCP 客户端，但攻击者可以构造一个网页，诱使浏览器向 `localhost:1234/mcp` 发起 POST —— 而用户的本地 MCP 服务器正好监听该地址。如果服务器不检查 `Origin`，浏览器的同源策略救不了它，因为 `Origin: http://evil.com` 是合法的跨域请求。
 
-The 2025-11-25 spec requires servers to reject requests whose `Origin` is not on an allowlist. The allowlist typically contains the MCP client host (`https://claude.ai`, `vscode-webview://*`) and localhost variants for local UIs.
+2025-11-25 规范要求服务器拒绝 `Origin` 不在白名单中的请求。白名单通常包含 MCP 客户端主机（`https://claude.ai`、`vscode-webview://*`）以及本地 UI 的 localhost 变体。
 
-### Session id lifecycle
+### 会话 ID 生命周期
 
-1. Client sends first request without `Mcp-Session-Id`.
-2. Server assigns a random id, sets `Mcp-Session-Id` on the response header.
-3. Client echoes that header on all subsequent requests and on `GET /mcp` for the stream.
-4. Session can be revoked by the server; client sees 404 on subsequent requests and must re-initialize.
-5. Client can explicitly DELETE the session for clean shutdown.
+1. 客户端首次请求不带 `Mcp-Session-Id`。
+2. 服务器分配一个随机 ID，并在响应头部设置 `Mcp-Session-Id`。
+3. 客户端在后续所有请求以及用于获取流的 `GET /mcp` 上回传该头部。
+4. 服务器可以撤销会话；客户端在后续请求中看到 404，必须重新初始化。
+5. 客户端可以显式 DELETE 会话，实现干净关闭。
 
-### Keepalive and reconnect
+### 保活与重连
 
-SSE connections drop. The client re-establishes by re-GETing with the same `Mcp-Session-Id`. Server MUST queue events missed during the outage (up to a reasonable window) and replay via the `last-event-id` header the client echoes.
+SSE 连接会断开。客户端通过使用相同的 `Mcp-Session-Id` 重新 GET 来重建连接。服务器必须将中断期间错过的事件排队（在合理时间窗口内），并通过客户端回传的 `last-event-id` 头部进行重放。
 
-Phase 13 · 13 covers Tasks, which let long-running work survive even a full-session reconnect.
+Phase 13 · 13 将介绍 Tasks，它能让长时间运行的任务即使在完整会话重连后也能存活。
 
-### Backwards compatibility probe
+### 向后兼容探测
 
-A client that wants to support both old and new servers:
+希望同时支持新旧服务器的客户端可以这样做：
 
-1. POST to `/mcp`.
-2. If response is `200 OK` with JSON or SSE, this is Streamable HTTP.
-3. If response is `200 OK` with `Content-Type: text/event-stream` AND a `Location` header pointing to a secondary endpoint, this is legacy HTTP+SSE; follow the `Location`.
+1. 向 `/mcp` 发送 POST。
+2. 如果响应是 `200 OK` 且为 JSON 或 SSE，则是 Streamable HTTP。
+3. 如果响应是 `200 OK`、`Content-Type: text/event-stream` 并且带有指向二级端点的 `Location` 头部，则是旧版 HTTP+SSE；跟随 `Location`。
 
-### Cloudflare, ngrok, and hosting
+### Cloudflare、ngrok 与托管
 
-Production remote MCP servers in 2026 run on Cloudflare Workers (with their MCP Agents SDK), Vercel Functions, or containerized Node/Python. Key: your hosting must support long-lived HTTP connections for the SSE GET. Vercel's free tier caps at 10 seconds and is unsuitable. Cloudflare Workers support indefinite streams.
+2026 年的生产级远程 MCP 服务器运行在 Cloudflare Workers（配合其 MCP Agents SDK）、Vercel Functions 或容器化的 Node/Python 上。关键：你的托管环境必须支持 SSE GET 的长期 HTTP 连接。Vercel 免费版限制 10 秒，不适用。Cloudflare Workers 支持无限流。
 
-### Gateway composition
+### 网关组合
 
-When you front multiple MCP servers with a gateway (Phase 13 · 17), the gateway is a single Streamable HTTP endpoint that rewrites session ids and multiplexes upstream. Tools are merged at the gateway layer; the client sees a single logical server.
+当你用网关（Phase 13 · 17）代理多个 MCP 服务器时，网关是一个单独的 Streamable HTTP 端点，负责重写会话 ID 并向上游多路复用。工具在网关层合并；客户端看到的是单一逻辑服务器。
 
-### Transport failure modes
+### 传输层故障模式
 
-- **stdio SIGPIPE.** Child process death mid-write raises SIGPIPE; servers should exit cleanly. Clients should detect EOF and mark the session dead.
-- **HTTP 502 / 504.** Cloudflare, nginx, and other proxies emit these on upstream failure. Streamable HTTP clients should retry once after a short backoff.
-- **SSE connection drop.** TCP RST, proxy timeout, or client network change closes the stream. Client reconnects with `Mcp-Session-Id` and optional `last-event-id` to resume.
-- **Session revocation.** Server invalidates a session id; client sees 404 on next request. Client must re-handshake.
-- **Clock skew.** Resource-TTL calculations on the client diverge from the server. Client should treat server timestamps as authoritative.
+- **stdio SIGPIPE。** 子进程在写入中途死亡会触发 SIGPIPE；服务器应干净退出。客户端应检测 EOF 并将会话标记为死亡。
+- **HTTP 502 / 504。** Cloudflare、nginx 和其他代理在上游故障时返回这些状态码。Streamable HTTP 客户端应在短暂退避后重试一次。
+- **SSE 连接断开。** TCP RST、代理超时或客户端网络变更都会关闭流。客户端使用 `Mcp-Session-Id` 和可选的 `last-event-id` 重新连接以恢复。
+- **会话撤销。** 服务器使会话 ID 失效；客户端在下次请求时看到 404。客户端必须重新握手。
+- **时钟偏移。** 客户端的资源 TTL 计算可能与服务器不一致。客户端应将服务器时间戳视为权威。
 
-### When to bypass Streamable HTTP
+### 何时绕过 Streamable HTTP
 
-Some enterprises deploy MCP servers behind gRPC or message-queue transports inside their own networks. This is non-standard — MCP's spec does not formally define these. Gateways can expose a Streamable HTTP surface to MCP clients while using gRPC internally. Keep the external surface spec-compliant; the gateway owns the translation.
+某些企业在自有网络内部通过 gRPC 或消息队列传输层部署 MCP 服务器。这是非标准的 —— MCP 规范未正式定义这些。网关可以向 MCP 客户端暴露 Streamable HTTP 表面，同时在内部使用 gRPC。保持外部表面符合规范；网关拥有翻译职责。
 
-## Use It
+## 动手实践
 
-`code/main.py` implements a minimal Streamable HTTP endpoint using `http.server` (stdlib). It handles POST, GET, and DELETE on `/mcp`, sets `Mcp-Session-Id` on first response, validates `Origin`, and rejects requests from non-allowlisted origins. The handler reuses the Lesson 07 notes server's dispatch logic.
+`code/main.py` 使用 `http.server`（标准库）实现了一个最小化的 Streamable HTTP 端点。它处理 `/mcp` 上的 POST、GET 和 DELETE，在首次响应时设置 `Mcp-Session-Id`，校验 `Origin`，并拒绝非白名单来源的请求。该处理程序复用了 Lesson 07 笔记服务器的分发逻辑。
 
-What to look at:
+观察重点：
 
-- The POST handler reads the JSON-RPC body, dispatches, and writes a JSON response (the single-response variant; SSE variant is structurally similar).
-- The `Origin` check rejects the default `http://evil.example` probe but accepts `http://localhost`.
-- Session ids are random 128-bit hex strings; the server keeps per-session state in memory.
+- POST 处理程序读取 JSON-RPC 请求体、分发，并写入 JSON 响应（单响应变体；SSE 变体结构类似）。
+- `Origin` 检查会拒绝默认的 `http://evil.example` 探测，但接受 `http://localhost`。
+- 会话 ID 是随机的 128 位十六进制字符串；服务器在内存中保存每个会话的状态。
 
-## Ship It
+## 交付成果
 
-This lesson produces `outputs/skill-mcp-transport-migrator.md`. Given an HTTP+SSE (legacy) MCP server, the skill produces a migration plan to Streamable HTTP with session-id continuity, Origin checks, and backwards-compatible probe support.
+本课产出 `outputs/skill-mcp-transport-migrator.md`。给定一个 HTTP+SSE（遗留）MCP 服务器，该技能会生成一份迁移计划，涵盖迁移到 Streamable HTTP、会话 ID 连续性、Origin 检查和向后兼容探测支持。
 
-## Exercises
+## 练习题
 
-1. Run `code/main.py`. POST an `initialize` from `curl` and observe the `Mcp-Session-Id` response header. POST a second request echoing the header and verify session continuity.
+1. 运行 `code/main.py`。用 `curl` POST 一个 `initialize`，观察响应头中的 `Mcp-Session-Id`。POST 第二个请求并回传该头部，验证会话连续性。
 
-2. Add a GET handler that opens an SSE stream. Send one `notifications/progress` event every five seconds. Reconnect by re-GETing with the same session id and confirm the server accepts it.
+2. 添加一个打开 SSE 流的 GET 处理程序。每五秒发送一个 `notifications/progress` 事件。使用相同的会话 ID 重新 GET 进行重连，确认服务器接受。
 
-3. Implement the `last-event-id` replay logic. On reconnect, replay any events generated since that id.
+3. 实现 `last-event-id` 重放逻辑。重连时，重放自该 ID 以来生成的所有事件。
 
-4. Extend `Origin` validation to support a wildcard pattern (`https://*.example.com`) and confirm it accepts `https://app.example.com` but rejects `https://evil.example.com.attacker.net`.
+4. 扩展 `Origin` 校验以支持通配符模式（`https://*.example.com`），并确认它接受 `https://app.example.com` 但拒绝 `https://evil.example.com.attacker.net`。
 
-5. Take a legacy HTTP+SSE server from the official registry (there are several) and sketch the migration: what changes in endpoint handling, session id generation, and header semantics.
+5. 从官方注册表选取一个遗留 HTTP+SSE 服务器，草拟迁移方案：端点处理、会话 ID 生成和头部语义分别需要哪些改动。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|----------------|------------------------|
-| stdio transport | "Local child process" | JSON-RPC over stdin/stdout, newline-delimited |
-| Streamable HTTP | "The remote transport" | Single-endpoint POST + GET + optional SSE, 2025-03-26 spec |
-| HTTP+SSE | "Legacy" | Two-endpoint model being removed in mid-2026 |
-| `Mcp-Session-Id` | "Session header" | Server-assigned random id echoed on every subsequent request |
-| `Origin` allowlist | "DNS-rebinding defense" | Reject requests whose Origin is not approved |
-| Single endpoint | "One URL" | `/mcp` handles POST / GET / DELETE for all session operations |
-| `last-event-id` | "SSE replay" | Header used to resume a dropped stream without missing events |
-| Backwards-compat probe | "Old vs new detection" | Client response-shape check that auto-selects transport |
-| Long-lived HTTP | "SSE streaming" | Server pushes events for minutes or hours on one TCP connection |
-| Session revocation | "Force re-init" | Server invalidates a session id; client must handshake again |
+| 术语 | 通常说法 | 实际含义 |
+|------|----------|----------|
+| stdio transport | “本地子进程” | 基于 stdin/stdout 的 JSON-RPC，换行分隔 |
+| Streamable HTTP | “远程传输层” | 单端点 POST + GET + 可选 SSE，2025-03-26 规范 |
+| HTTP+SSE | “遗留方案” | 双端点模型，将于 2026 年中期移除 |
+| `Mcp-Session-Id` | “会话头部” | 服务器分配的随机 ID，客户端在后续每次请求中回传 |
+| `Origin` allowlist | “DNS 重绑防御” | 拒绝 Origin 未经批准的请求 |
+| Single endpoint | “一个 URL” | `/mcp` 处理所有会话操作的 POST / GET / DELETE |
+| `last-event-id` | “SSE 重放” | 客户端用于恢复断开的流而不漏事件的头部 |
+| Backwards-compat probe | “新旧检测” | 客户端根据响应形态自动选择传输层 |
+| Long-lived HTTP | “SSE 流” | 服务器在一条 TCP 连接上推送事件数分钟甚至数小时 |
+| Session revocation | “强制重新初始化” | 服务器使会话 ID 失效；客户端必须重新握手 |
 
-## Further Reading
+## 延伸阅读
 
-- [MCP — Basic transports spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) — canonical reference for stdio and Streamable HTTP
-- [MCP — Basic transports spec 2025-03-26](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) — the revision that introduced Streamable HTTP
-- [Cloudflare — MCP transport](https://developers.cloudflare.com/agents/model-context-protocol/transport/) — Workers-hosted Streamable HTTP patterns
-- [AWS — MCP transport mechanisms](https://builder.aws.com/content/35A0IphCeLvYzly9Sw40G1dVNzc/mcp-transport-mechanisms-stdio-vs-streamable-http) — comparison across deployment shapes
-- [Atlassian — HTTP+SSE deprecation notice](https://community.atlassian.com/forums/Atlassian-Remote-MCP-Server/HTTP-SSE-Deprecation-Notice/ba-p/3205484) — concrete migration deadline example
+- [MCP — Basic transports spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) —— stdio 与 Streamable HTTP 的权威参考
+- [MCP — Basic transports spec 2025-03-26](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) —— 引入 Streamable HTTP 的修订版本
+- [Cloudflare — MCP transport](https://developers.cloudflare.com/agents/model-context-protocol/transport/) —— Workers 托管的 Streamable HTTP 模式
+- [AWS — MCP transport mechanisms](https://builder.aws.com/content/35A0IphCeLvYzly9Sw40G1dVNzc/mcp-transport-mechanisms-stdio-vs-streamable-http) —— 不同部署形态对比
+- [Atlassian — HTTP+SSE deprecation notice](https://community.atlassian.com/forums/Atlassian-Remote-MCP-Server/HTTP-SSE-Deprecation-Notice/ba-p/3205484) —— 具体迁移截止期限示例

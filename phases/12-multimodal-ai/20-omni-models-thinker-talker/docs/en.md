@@ -1,135 +1,135 @@
-# Omni Models: Qwen2.5-Omni and the Thinker-Talker Split
+# 全模态模型：Qwen2.5-Omni 与 Thinker-Talker 拆分
 
-> GPT-4o's product demo in May 2024 was disruptive not because of the underlying model but because of the product shape — a voice interface where you talk, the model sees what the camera sees, and it talks back in under 250ms. The open ecosystem spent the rest of 2024 and 2025 racing to reach that product surface. Qwen2.5-Omni (March 2025) is the reference open design: a Thinker (large text-generating transformer) plus a Talker (parallel speech-generating transformer), linked by streaming speech tokens. Mini-Omni simplified it, Moshi matched its latency, GLM-4-Voice extended it to Chinese. This lesson reads the Thinker-Talker architecture and the latency budget that makes streaming real-time dialogue work.
+> GPT-4o 在 2024 年 5 月的产品演示之所以具有颠覆性，并非因为底层模型本身，而是产品形态——一个语音交互界面：你说话，模型看到摄像头所见，并在 250 毫秒内回话。开源生态在 2024 年和 2025 年其余时间里，都在竞相达到这样的产品表面体验。Qwen2.5-Omni（2025 年 3 月）是代表性的开源设计：一个思考器（Thinker，大型文本生成 Transformer）加一个说话器（Talker，并行的语音生成 Transformer），通过流式语音令牌连接。Mini-Omni 对其进行了简化，Moshi 追平了其延迟，GLM-4-Voice 将其扩展到了中文。本节课解读 Thinker-Talker 架构，以及让流式实时对话生效的延迟预算。
 
-**Type:** Build
-**Languages:** Python (stdlib, streaming pipeline latency simulator + VAD loop)
-**Prerequisites:** Phase 12 · 19 (audio-LLMs), Phase 12 · 16 (any-to-any)
-**Time:** ~180 minutes
+**Type:** 实践构建
+**Languages:** Python（标准库、流式管道延迟模拟器 + VAD 循环）
+**Prerequisites:** Phase 12 · 19（音频大语言模型），Phase 12 · 16（任意模态到任意模态）
+**Time:** ~180 分钟
 
-## Learning Objectives
+## 学习目标
 
-- Split the inference pipeline into Thinker (text reasoning) and Talker (speech synthesis) and explain why parallel streaming works.
-- Compute the time-to-first-audio-byte (TTFAB) budget for a conversational interaction, component by component.
-- Describe TMRoPE's time-aligned position encoding across vision, audio, and text within the Thinker.
-- Name the three real-time conversational patterns: half-duplex, turn-taking, full-duplex.
+- 将推理管道拆分为思考器（Thinker，文本推理）和说话器（Talker，语音合成），并解释为什么并行流式生成有效。
+- 按组件计算对话交互的首字节音频时间（TTFAB）预算。
+- 描述 TMRoPE 在思考器内部跨视觉、音频和文本的时间对齐位置编码。
+- 说出三种实时对话模式：半双工、轮流发言、全双工。
 
-## The Problem
+## 问题背景
 
-A real-time voice assistant has to do a lot, fast:
+实时语音助手必须快速完成很多事情：
 
-1. Hear the user. Real-time speech tokenization, voice activity detection (VAD) to know when they're done speaking.
-2. Optionally see. Camera input at 2-4 FPS, streamed into the Thinker alongside audio.
-3. Think. Compose a response conditioned on the conversation history.
-4. Speak. Synthesize audio tokens, decode to waveform, stream to the user's speakers.
+1. 听见用户。实时语音令牌化、语音活动检测（VAD）以判断用户何时说完。
+2. 可选地看见。摄像头输入以 2-4 FPS 进入，与音频一起流式输入思考器。
+3. 思考。基于对话历史组织回复。
+4. 说话。合成音频令牌，解码为波形，流式输出到用户扬声器。
 
-Each step adds latency. Conversational-feel requires total round-trip < 500ms — below that, the user stops noticing the lag. GPT-4o claims ~250ms. Moshi ~160ms. Qwen2.5-Omni ~350-500ms.
+每一步都会增加延迟。要达到对话般的体验，总往返延迟必须小于 500 毫秒——低于这个值，用户就不会注意到卡顿。GPT-4o 宣称约 250 毫秒，Moshi 约 160 毫秒，Qwen2.5-Omni 约 350-500 毫秒。
 
-Every component needs to stream. Nothing can be "batch everything then decode."
+每个组件都必须流式工作。不能有任何“先全部批处理再解码”的环节。
 
-## The Concept
+## 核心概念
 
-### Thinker and Talker
+### Thinker 与 Talker
 
-Qwen2.5-Omni's decomposition:
+Qwen2.5-Omni 的分解方式：
 
-- Thinker: a 7B-80B text-generating transformer. Consumes interleaved text + image + audio tokens. Outputs text tokens representing what to say.
-- Talker: a smaller speech-generating transformer (200M-1B). Consumes Thinker's text output tokens plus recent speech-context tokens. Outputs discrete speech tokens (residual-VQ indices).
-- Speech decoder: a streaming waveform decoder (SNAC, MoVQGAN family) that takes speech tokens to audio samples in real time.
+- Thinker：一个 7B-80B 的文本生成 Transformer。消费交错的文本 + 图像 + 音频令牌。输出代表“要说什么”的文本令牌。
+- Talker：一个更小的语音生成 Transformer（200M-1B）。消费 Thinker 输出的文本令牌以及最近的语音上下文令牌。输出离散语音令牌（残差向量量化，residual-VQ 索引）。
+- 语音解码器：流式波形解码器（SNAC、MoVQGAN 家族），将语音令牌实时转换为音频采样。
 
-The separation matters. Thinker has to be big for good reasoning. Talker can be small because its job is local — convert text to speech tokens. Bigger Talker is not more expressive; it's slower.
+这种拆分很重要。Thinker 必须足够大才能保证好的推理能力。Talker 可以很小，因为它的任务很局部——把文本转换成语音令牌。更大的 Talker 并不会更具表现力；只会更慢。
 
-Running both in parallel:
+两者并行运行：
 
-1. Thinker emits text token t_i.
-2. Talker consumes t_i (via streaming) and emits speech tokens s_i, s_{i+1}, ..., s_{i+k}.
-3. Speech decoder consumes speech tokens as they come and emits audio samples.
-4. By the time Thinker is at text token t_{i+3}, Talker has already streamed audio for t_0..t_{i+2}.
+1. Thinker 生成文本令牌 t_i。
+2. Talker 消费 t_i（通过流式）并生成语音令牌 s_i, s_{i+1}, ..., s_{i+k}。
+3. 语音解码器随语音令牌到达即时转换为音频采样。
+4. 当 Thinker 处理到文本令牌 t_{i+3} 时，Talker 已经为 t_0..t_{i+2} 流式输出了音频。
 
-### TMRoPE — time-aligned multimodal positions
+### TMRoPE——时间对齐的多模态位置编码
 
-Thinker needs to integrate image frames (arriving at, say, 4 FPS), audio frames (arriving at 50 frames/second), and text from conversation history. A naive sequence order (all images, then all audio, then text) loses temporal alignment.
+Thinker 需要整合以 4 FPS 到达的图像帧、以 50 帧/秒到达的音频帧，以及对话历史中的文本。一种朴素的序列顺序（所有图像、然后所有音频、然后文本）会丢失时间对齐。
 
-TMRoPE assigns absolute timestamps to every token. Vision token at t=2.3s. Audio token at t=2.32s. Text token from the user "stop" at t=2.35s. RoPE rotates attention by timestamp; the model sees them as temporally concurrent.
+TMRoPE 为每个令牌分配绝对时间戳。视觉令牌在 t=2.3s。音频令牌在 t=2.32s。用户说“停”的文本令牌在 t=2.35s。RoPE 按时间戳旋转注意力；模型看到它们是时间并发的。
 
-This is the infrastructure for "he waved while saying hello" to work — the model sees the video frame and the audio at the same conceptual moment.
+这就是“他挥手的同时说你好”能够工作的基础设施——模型在同一个概念时刻看到视频帧和音频。
 
-### Streaming speech synthesis
+### 流式语音合成
 
-Speech tokens must stream. Mini-Omni (Xie & Wu, 2024) introduced "language models can hear, talk while thinking in streaming": Thinker output tokens and Talker output tokens interleave in the same sequence. Talker fires as soon as Thinker commits the next text token. No batch boundaries.
+语音令牌必须流式生成。Mini-Omni（Xie & Wu，2024）提出了“语言模型可以在流式思考的同时听和说”：Thinker 输出令牌和 Talker 输出令牌在同一个序列中交错。Thinker 一提交下一个文本令牌，Talker 就立即生成。没有批处理边界。
 
-Moshi (Défossez et al., October 2024) is the fastest open implementation. 160ms TTFAB on a single A100. Architecture: a single 7B transformer that emits text and speech tokens on alternating positions, with an "inner monologue" that separates the thinking stream from the speaking stream. This is effectively Thinker + Talker fused into one model with careful training.
+Moshi（Défossez 等人，2024 年 10 月）是最快的开源实现。在单张 A100 上 TTFAB 为 160 毫秒。架构上是一个 7B 的单一 Transformer，在交替位置输出文本和语音令牌，并通过“内心独白”（inner monologue）将思考流与说话流分开。这实际上是把 Thinker + Talker 融合进一个模型，并通过谨慎训练实现。
 
-### VAD and turn-taking
+### VAD 与轮流发言
 
-Voice activity detection runs on the input side. Two patterns:
+语音活动检测运行在输入侧。两种模式：
 
-- Half-duplex: user speaks, model listens. Model speaks, user listens. Clear handoff via VAD silence detection (~200ms).
-- Full-duplex: both can speak simultaneously. Model can backchannel ("uh-huh") or interrupt. Much harder. Moshi supports this.
+- 半双工（Half-duplex）：用户说，模型听；模型说，用户听。通过 VAD 静音检测（约 200 毫秒）完成清晰交接。
+- 全双工（Full-duplex）：双方可以同时说话。模型可以发出反馈（“嗯哼”）或打断。难得多。Moshi 支持这种模式。
 
-Qwen2.5-Omni supports half-duplex by default, with turn-taking via silence threshold. Full-duplex requires application-layer handling.
+Qwen2.5-Omni 默认支持半双工，通过静音阈值实现轮流发言。全双工需要应用层处理。
 
-### Qwen3-Omni (November 2025)
+### Qwen3-Omni（2025 年 11 月）
 
-The successor. Qwen3-80B Thinker, larger Talker, improved TMRoPE-v2. Latency close to GPT-4o's 250ms. Open weights. Benchmarks on OmniBench competitive with Gemini 2.0 Live.
+继任者。Qwen3-80B Thinker、更大的 Talker、改进的 TMRoPE-v2。延迟接近 GPT-4o 的 250 毫秒。开源权重。在 OmniBench 上的基准测试与 Gemini 2.0 Live 相当。
 
-### Production latency budget
+### 生产延迟预算
 
-For a typical streaming interaction:
+对于典型的流式交互：
 
-- Mic -> audio tokens: 40-80ms.
-- Prefill (prompt + history): 100-200ms at 7B, much more at 70B.
-- First Thinker text token: 40ms.
-- Talker processes first text token: 20ms.
-- First speech tokens commit: 40ms.
-- Residual-VQ decode: 30ms.
-- Speech waveform decode: 50-80ms.
+- 麦克风 -> 音频令牌：40-80 毫秒。
+- 预填充（prompt + 历史）：7B 模型 100-200 毫秒，70B 模型高得多。
+- Thinker 首个文本令牌：40 毫秒。
+- Talker 处理首个文本令牌：20 毫秒。
+- 首个语音令牌提交：40 毫秒。
+- 残差-VQ 解码：30 毫秒。
+- 语音波形解码：50-80 毫秒。
 
-Total TTFAB: 320-510ms at 7B, 600-900ms at 70B. Frontier quality usually means 70B+; hence the frontier latency gap.
+TTFAB 总计：7B 模型 320-510 毫秒，70B 模型 600-900 毫秒。前沿质量通常需要 70B+；因此存在前沿延迟差距。
 
-### Token-rate math
+### 令牌速率数学
 
-At 16kHz speech with 50 Hz base speech tokens, you need 50 speech tokens per second of output. Talker must emit ≥50 tok/s to keep up. At a typical LLM throughput of 30-80 tok/s on an H100, a small (200-300M) Talker is fast enough; a 7B Talker would fall behind.
+对于 16kHz 语音、50 Hz 基础语音令牌，每秒输出需要 50 个语音令牌。Talker 必须以 ≥50 tok/s 的速率生成才能跟得上。在 H100 上典型的大语言模型吞吐量为 30-80 tok/s，一个小的（200-300M）Talker 足够快；7B 的 Talker 会落后。
 
-This is why small dedicated Talker models exist rather than "just use the main model."
+这就是为什么要用小的专用 Talker 模型，而不是“直接用主模型”。
 
-## Use It
+## 动手实践
 
-`code/main.py`:
+`code/main.py`：
 
-- Simulates a Thinker-Talker pipeline with mock token-emission rates.
-- Computes TTFAB for configurable model sizes and mic sample rates.
-- Demonstrates half-duplex turn-taking with VAD silence threshold.
+- 用模拟的令牌发射速率模拟 Thinker-Talker 管道。
+- 为可配置的模型大小和麦克风采样率计算 TTFAB。
+- 演示基于 VAD 静音阈值的半双工轮流发言。
 
-## Ship It
+## 交付成果
 
-This lesson produces `outputs/skill-omni-streaming-budget.md`. Given a real-time voice product's target TTFAB and feature set (vision-in, bilingual, full-duplex), picks Qwen2.5-Omni, Qwen3-Omni, Moshi, or Mini-Omni and sizes the Thinker/Talker.
+本节课产出 `outputs/skill-omni-streaming-budget.md`。针对实时语音产品的目标 TTFAB 和功能集合（视觉输入、双语、全双工），在 Qwen2.5-Omni、Qwen3-Omni、Moshi 或 Mini-Omni 中选择，并确定 Thinker/Talker 的规模。
 
-## Exercises
+## 练习题
 
-1. Your target TTFAB is 300ms. On a 7B Thinker and 300M Talker, write out every component's latency.
+1. 你的目标 TTFAB 是 300 毫秒。在 7B Thinker 和 300M Talker 上，写出每个组件的延迟。
 
-2. Qwen2.5-Omni uses TMRoPE. Describe what the model sees for a prompt where the user starts speaking at t=1s and the camera catches a gesture at t=1.2s.
+2. Qwen2.5-Omni 使用 TMRoPE。描述当用户在 t=1s 开始说话、摄像头在 t=1.2s 捕捉到一个手势时，模型看到了什么。
 
-3. Full-duplex support requires the model to emit audio while listening. Propose a training data format that teaches this.
+3. 全双工支持要求模型在听的同时发出音频。提出一种能够教授这一能力的训练数据格式。
 
-4. Read Moshi's paper Section 4. Describe the "inner monologue" separation and why it avoids the Thinker-Talker split.
+4. 阅读 Moshi 论文的第 4 节。描述“内心独白”的分离方式，以及它为什么避免了 Thinker-Talker 拆分。
 
-5. Compute the throughput budget: how fast must a Talker emit tokens to keep up with 16kHz speech at 50 base-layer tokens/sec?
+5. 计算吞吐量预算：为了跟上 16kHz 语音、每秒 50 个基础层令牌，Talker 必须以多快的速度生成令牌？
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|-----------------|------------------------|
-| Thinker | "Reasoning brain" | Large text-generating transformer producing what to say |
-| Talker | "Speech-generating mouth" | Small transformer producing discrete speech tokens from Thinker's text |
-| TTFAB | "Latency budget" | Time-to-first-audio-byte: from user speech end to first audio sample out |
-| TMRoPE | "Time-aligned RoPE" | Position encoding using absolute timestamps across vision, audio, text |
-| Half-duplex | "Turn-taking" | User and model alternate; VAD silence detects user-done |
-| Full-duplex | "Simultaneous" | Model can speak and listen at the same time; backchannel capable |
-| Inner monologue | "Moshi separation" | Single-model design where thinking-stream and speaking-stream interleave |
+| 术语 | 人们的说法 | 实际含义 |
+|------|------------|----------|
+| Thinker | “推理大脑” | 生成“要说什么”的大型文本生成 Transformer |
+| Talker | “语音生成的嘴” | 从 Thinker 的文本生成离散语音令牌的小型 Transformer |
+| TTFAB | “延迟预算” | 首字节音频时间：从用户语音结束到首个音频采样输出 |
+| TMRoPE | “时间对齐的 RoPE” | 使用跨视觉、音频、文本的绝对时间戳的位置编码 |
+| Half-duplex | “轮流发言” | 用户和模型交替；VAD 静音检测判断用户说完 |
+| Full-duplex | “同时双向” | 模型可以同时说和听；具备反馈能力 |
+| Inner monologue | “Moshi 的分离方式” | 单模型设计，思考流与说话流交错 |
 
-## Further Reading
+## 延伸阅读
 
 - [Xu et al. — Qwen2.5-Omni (arXiv:2503.20215)](https://arxiv.org/abs/2503.20215)
 - [Qwen Team — Qwen3-Omni (arXiv:2509.17765)](https://arxiv.org/html/2509.17765v1)
