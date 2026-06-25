@@ -1,90 +1,90 @@
-# RL for Games — AlphaZero, MuZero, and the LLM-Reasoning Era
+# 面向游戏的强化学习 —— AlphaZero、MuZero 与大语言模型推理时代
 
-> 1992: TD-Gammon beat human champions at backgammon with pure TD. 2016: AlphaGo beat Lee Sedol. 2017: AlphaZero dominated chess, shogi, and Go from scratch. 2024: DeepSeek-R1 proved the same recipe, with GRPO replacing PPO, works on reasoning. Games are the benchmark that drives every breakthrough in this phase.
+> 1992 年：TD-Gammon 仅凭时序差分（TD）就在西洋双陆棋上击败人类冠军。2016 年：AlphaGo 击败李世石。2017 年：AlphaZero 从零开始统治国际象棋、将棋和围棋。2024 年：DeepSeek-R1 证明同样的配方，只是用 GRPO 取代 PPO，就能在推理任务上奏效。游戏是这一阶段每一次突破背后的基准。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 9 · 05 (DQN), Phase 9 · 08 (PPO), Phase 9 · 09 (RLHF), Phase 9 · 10 (MARL)
-**Time:** ~120 minutes
+**类型：** Build
+**语言：** Python
+**前置知识：** 第 9 阶段 · 第 05 课（DQN）、第 9 阶段 · 第 08 课（PPO）、第 9 阶段 · 第 09 课（RLHF）、第 9 阶段 · 第 10 课（MARL）
+**时长：** 约 120 分钟
 
-## The Problem
+## 问题背景
 
-Games have everything RL wants. Clean reward (win/loss). Infinite episodes (self-play resets). Perfect simulation (the game *is* the simulator). Discrete or small continuous action spaces. Multi-agent structure that forces adversarial robustness.
+游戏具备强化学习想要的一切：干净的奖励（胜/负）、无限回合（自弈重置）、完美模拟器（游戏本身就是模拟器）、离散或小型连续动作空间，以及迫使对抗鲁棒性的多智能体结构。
 
-And games are how every major RL breakthrough was tested. TD-Gammon (backgammon, 1992). Atari-DQN (2013). AlphaGo (2016). AlphaZero (2017). OpenAI Five (Dota 2, 2019). AlphaStar (StarCraft II, 2019). MuZero (learned model, 2019). AlphaTensor (matrix multiplication, 2022). AlphaDev (sorting algorithms, 2023). DeepSeek-R1 (math reasoning, 2025) — the latest demonstration that game-RL techniques work on text.
+而且，游戏也是每一次重大强化学习突破的试金石。TD-Gammon（西洋双陆棋，1992）、Atari-DQN（2013）、AlphaGo（2016）、AlphaZero（2017）、OpenAI Five（Dota 2，2019）、AlphaStar（星际争霸 II，2019）、MuZero（学习模型，2019）、AlphaTensor（矩阵乘法，2022）、AlphaDev（排序算法，2023）、DeepSeek-R1（数学推理，2025）—— 最新的证据表明，游戏强化学习技术同样适用于文本。
 
-This capstone surveys the three landmark architectures — AlphaZero, MuZero, and GRPO — through a single unifying lens: **self-play + search + policy improvement**. Each generalizes the previous; GRPO in particular is AlphaZero's recipe applied to LLM reasoning, with tokens as actions and mathematical verification as the win signal.
+本综合课程通过统一的视角 **自弈 + 搜索 + 策略改进** 来梳理三大里程碑架构：AlphaZero、MuZero 和 GRPO。每一种方法都是对前者的泛化；GRPO 尤其像是把 AlphaZero 的配方应用到了大语言模型（LLM）推理上，只不过动作变成了 token，胜利信号变成了数学验证。
 
-## The Concept
+## 核心概念
 
-![AlphaZero ↔ MuZero ↔ GRPO: same loop, different environments](../assets/rl-games.svg)
+![AlphaZero ↔ MuZero ↔ GRPO：同一循环，不同环境](../assets/rl-games.svg)
 
-**The unifying loop.**
+**统一循环。**
 
-```
+```python
 while True:
-    trajectory = self_play(current_policy, search)     # play game against self
-    policy_target = search.improved_policy(trajectory) # search improves raw policy
-    policy_net.update(policy_target, value_target)     # supervised on search output
+    trajectory = self_play(current_policy, search)     # 智能体与自己对弈
+    policy_target = search.improved_policy(trajectory) # 搜索改进原始策略
+    policy_net.update(policy_target, value_target)     # 以搜索输出为监督目标
 ```
 
-**AlphaZero (2017).** Silver et al. Given a game (chess, shogi, Go) with known rules:
+**AlphaZero（2017 年）。** Silver 等人提出。给定已知规则的游戏（国际象棋、将棋、围棋）：
 
-- Policy-value network: one tower `f_θ(s) → (p, v)`. `p` is a prior over legal moves. `v` is the expected game outcome.
-- Monte Carlo Tree Search (MCTS): at each move, expand a tree of possible continuations. Use `(p, v)` as the prior + bootstrap. Select nodes by UCB (PUCT): `a* = argmax Q(s, a) + c · p(a|s) · √N(s) / (1 + N(s, a))`.
-- Self-play: play games agent-vs-agent. At move `t`, the MCTS visit distribution `π_t` becomes the policy training target.
-- Loss: `L = (v - z)² - π · log p + c · ||θ||²`. `z` is the game outcome (+1 / 0 / -1).
+- 策略-价值网络（policy-value network）：一个共享塔 `f_θ(s) → (p, v)`。`p` 是合法动作的稀疏先验，`v` 是预期对局结果。
+- 蒙特卡洛树搜索（Monte Carlo Tree Search，MCTS）：在每一步展开一棵可能续走树，用 `(p, v)` 作为先验与自举（bootstrap）信号，通过 UCB（PUCT）选择节点：`a* = argmax Q(s, a) + c · p(a|s) · √N(s) / (1 + N(s, a))`。
+- 自弈（self-play）：智能体与自己对弈。在第 `t` 步，MCTS 的访问分布 `π_t` 成为策略的训练目标。
+- 损失（loss）：`L = (v - z)² - π · log p + c · ||θ||²`。`z` 是真实对局结果（+1 / 0 / -1）。
 
-Zero human knowledge. Zero handcrafted heuristics. A single recipe that mastered chess, shogi, and Go after a few tens of millions of self-play games each.
+零人类知识、零手工启发式。同一套方法在数千万盘自弈后掌握了国际象棋、将棋和围棋。
 
-**MuZero (2019).** Schrittwieser et al. Removes the requirement that the rules are known.
+**MuZero（2019 年）。** Schrittwieser 等人提出。不再要求已知规则。
 
-- Instead of a fixed environment, learn a *latent dynamics model* `(h, g, f)`:
-  - `h(s)`: encode observation to latent state.
-  - `g(s_latent, a)`: predict next latent state + reward.
-  - `f(s_latent)`: predict policy prior + value.
-- MCTS runs in the *learned latent space*. Same search, same training loop.
-- Works on Go, chess, shogi *and* Atari — one algorithm, no rule knowledge.
+- 用一个*潜在动力学模型（latent dynamics model）* `(h, g, f)` 替代固定环境：
+  - `h(s)`：将观测编码为潜在状态。
+  - `g(s_latent, a)`：预测下一潜在状态 + 即时奖励（reward）。
+  - `f(s_latent)`：预测策略先验 + 价值。
+- MCTS 在*学习到的潜在空间*中运行。搜索与训练循环保持不变。
+- 适用于围棋、国际象棋、将棋 *以及* Atari —— 一种算法，无需规则知识。
 
-**Stochastic MuZero (2022).** Adds stochastic dynamics and chance nodes; extends to backgammon-class games.
+**随机 MuZero（2022 年）。** 引入随机动力学与机会节点，可扩展到西洋双陆棋类游戏。
 
-**Muesli, Gumbel MuZero (2022-2024).** Improvements on sample efficiency and deterministic search.
+**Muesli、Gumbel MuZero（2022–2024 年）。** 在样本效率与确定性搜索上的改进。
 
-**GRPO (2024-2025).** DeepSeek-R1 recipe. Same AlphaZero-shaped loop, applied to language-model reasoning:
+**GRPO（2024–2025 年）。** DeepSeek-R1 配方。同样是 AlphaZero 形状的循环，但应用于语言模型推理：
 
-- "Game": answer a math / coding / reasoning problem. "Win" = verifier (test case passes, numerical answer matches) returns 1.
-- Policy: the LLM. Actions: tokens. State: prompt + response-so-far.
-- No critic (PPO-style V_φ). Instead, for each prompt, sample `G` completions from the policy. Compute reward for each. Use the **group-relative advantage** `A_i = (r_i - mean_r) / std_r` as the signal for REINFORCE-style update.
-- KL penalty to reference policy to prevent drift (like RLHF).
-- Full loss:
+- “游戏”：回答一个数学 / 编程 / 推理问题。“获胜” = 验证器（verifier，如测试用例通过、数值答案匹配）返回 1。
+- 策略（policy）：LLM 本身。动作（action）：token。状态（state）：提示词（prompt）+ 已生成回复。
+- 无需评论网络（critic，类似 PPO 中的 V_φ）。对每个提示词，从策略中采样 `G` 个补全（completion），计算每个补全的奖励（reward），再用 **组相对优势（group-relative advantage）** `A_i = (r_i - mean_r) / std_r` 作为 REINFORCE 风格的更新信号。
+- KL 惩罚（KL penalty）拉回参考策略（reference policy），防止偏移（与 RLHF 类似）。
+- 完整损失：
 
   `L_GRPO(θ) = -E_{q, {o_i}} [ (1/G) Σ_i A_i · log π_θ(o_i | q) ] + β · KL(π_θ || π_ref)`
 
-No reward model, no critic, no MCTS. Group-relative baseline replaces all three. Matches or exceeds PPO-RLHF quality on reasoning benchmarks at a fraction of the compute.
+无需奖励模型（reward model）、无需评论网络、无需 MCTS。组相对基线（group-relative baseline）同时替代了这三者。在推理基准上达到或超过 PPO-RLHF 的效果，而计算量仅为其一小部分。
 
-**The R1 recipe in full.** DeepSeek-R1 (DeepSeek 2025) is two models in one paper:
+**完整的 R1 配方。** DeepSeek-R1（DeepSeek，2025）在一篇论文中实际上包含两个模型：
 
-- **R1-Zero.** Start from the DeepSeek-V3 base model. No SFT. Apply GRPO directly with two reward components: *accuracy reward* (rule-based — did the final answer parse to the correct number / did the code pass unit tests) and *format reward* (did the completion wrap its chain-of-thought in `<think>…</think>` tags). Over thousands of steps, average response length grows from ~100 to ~10,000 tokens and math benchmark scores climb to near-o1-preview levels. The model learns to reason from scratch. The downside: its chains of thought are often unreadable, mix languages, and lack stylistic polish.
-- **R1.** Fix R1-Zero's readability problems with a four-stage pipeline:
-  1. **Cold-start SFT.** Collect a few thousand long-CoT demonstrations with clean formatting. Supervised-finetune the base model on them. This gives a readable starting point.
-  2. **Reasoning-oriented GRPO.** Apply GRPO with the accuracy+format rewards plus a *language-consistency* reward to prevent code-switching.
-  3. **Rejection sampling + SFT round 2.** Sample ~600K reasoning trajectories from the RL checkpoint, keep only those with correct final answers and readable CoT, and combine with ~200K non-reasoning SFT examples (writing, QA, self-cognition). Fine-tune the base again.
-  4. **Full-spectrum GRPO.** One more RL round covering both reasoning (rule-based rewards) and general alignment (helpfulness/harmlessness preference-based rewards).
+- **R1-Zero。** 从 DeepSeek-V3 基座模型出发。没有 SFT，直接应用 GRPO，奖励包含两个部分：*准确性奖励（accuracy reward）*（基于规则 —— 最终答案是否解析为正确数字 / 代码是否通过单元测试）和 *格式奖励（format reward）*（补全是否将思维链包裹在 `<think>…</think>` 标签中）。经过数千步训练，平均回复长度从约 100 个 token 增长到约 10,000 个，数学基准成绩接近 o1-preview。模型从零学会了推理。缺点：其思维链往往难以阅读、混合语言、缺乏风格打磨。
+- **R1。** 用四阶段流程修复 R1-Zero 的可读性问题：
+  1. **冷启动 SFT。** 收集几千条格式干净的长思维链示范，对基座模型进行监督微调。得到一个可读的起点。
+  2. **面向推理的 GRPO。** 在准确性奖励 + 格式奖励基础上，增加 *语言一致性奖励（language-consistency reward）* 防止代码切换（code-switching）。
+  3. **拒绝采样 + 第二轮 SFT。** 从 RL 检查点采样约 60 万条推理轨迹，仅保留答案正确且思维链可读的样本，并与约 20 万条非推理 SFT 样本（写作、问答、自我认知）合并，再次微调基座模型。
+  4. **全谱 GRPO。** 最后一轮 RL，同时覆盖推理任务（基于规则的奖励）和通用对齐任务（ helpfulness/harmlessness 偏好奖励）。
 
-The result matches o1 on AIME and MATH-500 at open weights, and is small enough to distill. The same paper also releases six distilled dense models (Qwen-1.5B through Llama-70B) by SFT'ing on R1's reasoning traces — no RL at the student. Distillation of a strong RL teacher consistently beats RL from scratch at the student's scale.
+最终模型在 AIME 和 MATH-500 上达到 o1 水平，并以开放权重发布，且小到可以蒸馏。同一篇论文还发布了六个稠密蒸馏模型（Qwen-1.5B 到 Llama-70B），通过对 R1 的推理轨迹做 SFT 得到 —— 学生端无需 RL。对强大 RL 教师进行蒸馏，在学生规模上始终优于从头做 RL。
 
-**Why GRPO instead of PPO for reasoning.** Three reasons in the DeepSeekMath paper (Feb 2024): (1) no value network to train, halving memory; (2) the group baseline naturally handles the sparse end-of-trajectory reward that reasoning tasks produce; (3) per-prompt normalization makes advantages comparable across problems of wildly different difficulty, which PPO's single critic cannot.
+**为什么用 GRPO 而不是 PPO 做推理。** DeepSeekMath 论文（2024 年 2 月）给出三个原因：(1) 无需训练价值网络（value network），显存减半；(2) 组基线天然适合推理任务产生的稀疏端到端奖励；(3) 每个提示词单独归一化，使优势在不同难度的问题上可比，而 PPO 的单一评论网络做不到。
 
-**Search-free vs search-based.** Games have branched:
+**无搜索 vs 基于搜索。** 游戏领域已经分化：
 
-- *Perfect-information games with long horizons* (Go, chess): still search-based. AlphaZero / MuZero dominate.
-- *LLM reasoning*: no MCTS yet in production; GRPO on full rollouts, best-of-N for inference compute. Process reward models (PRMs) hint at step-level search being added back.
+- *长时程完美信息博弈*（围棋、国际象棋）：仍基于搜索。AlphaZero / MuZero 占主导。
+- *LLM 推理*：生产环境中尚未使用 MCTS；GRPO 在完整 rollout 上训练，推理时用 best-of-N 换取计算量。过程奖励模型（Process Reward Models，PRMs）暗示着逐步搜索可能会被重新引入。
 
-## Build It
+## 动手实现
 
-The code in `code/main.py` implements **GRPO in miniature** — a bandit with multiple groups of samples. The algorithm is the same as on an LLM; only the policy and environment are simpler. It teaches the *loss* and the *group-relative advantage*, which is the 2025 innovation.
+`code/main.py` 中的代码实现了**迷你版 GRPO** —— 一个带多组样本的多臂老虎机（bandit）。算法与 LLM 上的 GRPO 完全相同，只是策略（policy）和环境更简单。它用于教学 2025 年的核心创新：*损失函数*和*组相对优势*。
 
-### Step 1: a tiny verifier environment
+### 第 1 步：微型验证器环境
 
 ```python
 QUESTIONS = [
@@ -96,18 +96,18 @@ def verify(prompt_idx, answer_token):
     return 1.0 if answer_token == QUESTIONS[prompt_idx]["correct"] else 0.0
 ```
 
-In real GRPO the verifier runs unit tests or checks math equality.
+在真实 GRPO 中，验证器运行单元测试或检查数学等式。
 
-### Step 2: policy: softmax over K answer tokens per prompt
+### 第 2 步：策略：每个提示词对 K 个答案 token 做 softmax
 
 ```python
 def policy_probs(theta, p_idx):
     return softmax(theta[p_idx])
 ```
 
-Equivalent to the final-layer output of an LLM conditioned on a prompt.
+等价于 LLM 在给定提示词下最后一层输出。
 
-### Step 3: group sampling and group-relative advantage
+### 第 3 步：组采样与组相对优势
 
 ```python
 def grpo_step(theta, p_idx, G=8, beta=0.01, lr=0.1, rng=None):
@@ -122,51 +122,51 @@ def grpo_step(theta, p_idx, G=8, beta=0.01, lr=0.1, rng=None):
         grad = onehot(a) - probs
         for i in range(len(probs)):
             theta[p_idx][i] += lr * A * grad[i]
-    # KL penalty: pull theta toward reference
+    # KL 惩罚：将 theta 拉回参考策略
     for i in range(len(probs)):
         theta[p_idx][i] -= beta * (theta[p_idx][i] - reference[p_idx][i])
 ```
 
-The group-relative advantage is the 2024 DeepSeek trick. No critic needed. The "baseline" is the group mean, and normalization uses group std.
+组相对优势是 2024 年 DeepSeek 的关键技巧。无需评论网络。基线（baseline）就是组内均值，归一化使用组内标准差。
 
-### Step 4: compare to REINFORCE baseline (value-free)
+### 第 4 步：与无基线 REINFORCE 对比
 
-Same setup, same compute, plain REINFORCE. GRPO converges faster and more stably.
+相同设置、相同计算量、普通 REINFORCE。GRPO 收敛更快且更稳定。
 
-### Step 5: observe entropy and KL
+### 第 5 步：观察熵与 KL
 
-Same diagnostics as RLHF: mean KL to reference, policy entropy, reward-over-time. Once these stabilize, training is done.
+与 RLHF 使用相同的诊断指标：到参考策略的平均 KL、策略熵（entropy）、随时间变化的奖励。一旦这些指标稳定，训练即可结束。
 
-## Pitfalls
+## 常见陷阱
 
-- **Reward hacking via verifier gaming.** GRPO inherits RLHF's risk: if the verifier is wrong or exploitable, the LLM will find the exploit. Robust verifiers (multiple test cases, formal proofs) matter.
-- **Group size too small.** Variance of the group baseline goes like `1/√G`. Below `G = 4`, the advantage signal is noisy; standard choice is `G = 8` to `64`.
-- **Length bias.** LLM completions of different lengths have different log-probabilities. Normalize by token count, or use sequence-level log-prob, or truncate to max length.
-- **Pure self-play cycles.** AlphaZero-style training can get stuck in dominance loops on general-sum games. Mitigated by diverse opponent pools (league play, Lesson 10).
-- **Search-policy mismatch.** AlphaZero trains the policy to mimic search output. If the policy net is too small to represent the search's distribution, training stalls.
-- **Compute floor.** MuZero / AlphaZero need massive compute. A single ablation is often hundreds of GPU-hours. Miniature demos exist (e.g., AlphaZero on Connect Four) for learning.
-- **Verifier coverage.** Unit tests that pass for a buggy solution reinforce the bug. Design verifiers that catch edge cases.
+- **通过欺骗验证器实现奖励黑客（reward hacking）。** GRPO 继承了 RLHF 的风险：如果验证器有误或被利用，LLM 会找到漏洞。因此验证器必须鲁棒（多组测试用例、形式化证明）。
+- **组大小过小。** 组基线的方差按 `1/√G` 缩放。`G < 4` 时优势信号嘈杂；通常选择 `G = 8` 到 `64`。
+- **长度偏差（length bias）。** 不同长度的 LLM 补全具有不同的对数概率。应按 token 数量归一化，或使用序列级对数概率，或截断到最大长度。
+- **纯自弈循环。** AlphaZero 风格的训练在一般和博弈中可能陷入 dominance 循环。可通过多样化对手池缓解（联盟训练，见第 10 课）。
+- **搜索-策略不匹配。** AlphaZero 训练策略网络拟合搜索输出。如果策略网络太小，无法表示搜索的分布，训练会停滞。
+- **计算门槛。** MuZero / AlphaZero 需要大量计算。单个消融实验常常需要数百 GPU 小时。也有迷你演示（如 Connect Four 上的 AlphaZero）供学习使用。
+- **验证器覆盖不足。** 如果单元测试对某个有 bug 的解法也通过了，就会强化这个 bug。应设计能捕捉边界情况的验证器。
 
-## Use It
+## 应用指南
 
-The 2026 game-RL landscape, by domain:
+2026 年游戏强化学习各领域的主导方法：
 
-| Domain | Dominant method |
+| 领域 | 主流方法 |
 |--------|-----------------|
-| Two-player zero-sum board games (Go, chess, shogi) | AlphaZero / MuZero / KataGo |
-| Imperfect info card games (poker) | CFR + deep learning (DeepStack, Libratus, Pluribus) |
-| Atari / pixel games | Muesli / MuZero / IMPALA-PPO |
-| Large multiplayer strategy (Dota, StarCraft) | PPO + self-play + league (OpenAI Five, AlphaStar) |
-| LLM math/code reasoning | GRPO (DeepSeek-R1, Qwen-RL, open replications) |
-| LLM alignment | DPO / RLHF-PPO (not GRPO; verifier is preference not verifiable) |
-| Robotics | PPO + DR (not game-RL, but uses same policy-gradient tools) |
-| Combinatorial problems | AlphaZero variants (AlphaTensor, AlphaDev) |
+| 双人零和棋类（围棋、国际象棋、将棋） | AlphaZero / MuZero / KataGo |
+| 非完美信息纸牌游戏（扑克） | CFR + 深度学习（DeepStack、Libratus、Pluribus） |
+| Atari / 像素游戏 | Muesli / MuZero / IMPALA-PPO |
+| 大型多人在线策略游戏（Dota、星际争霸） | PPO + 自弈 + 联盟（OpenAI Five、AlphaStar） |
+| LLM 数学 / 代码推理 | GRPO（DeepSeek-R1、Qwen-RL、开源复现） |
+| LLM 对齐 | DPO / RLHF-PPO（不是 GRPO；验证器是偏好而非可验证） |
+| 机器人 | PPO + 域随机化（DR，不属于游戏 RL，但使用同样的策略梯度工具） |
+| 组合优化问题 | AlphaZero 变体（AlphaTensor、AlphaDev） |
 
-The *recipe* — self-play, search-augmented improvement, policy distillation — spans text, pixels, and physical control. GRPO is the youngest instance; more are coming.
+这一*配方* —— 自弈、搜索增强改进、策略蒸馏 —— 横跨文本、像素和物理控制。GRPO 是最年轻的实例；更多变体还在路上。
 
-## Ship It
+## 交付产物
 
-Save as `outputs/skill-game-rl-designer.md`:
+保存为 `outputs/skill-game-rl-designer.md`：
 
 ```markdown
 ---
@@ -189,36 +189,36 @@ Given a target (perfect-info game / imperfect-info / Atari / LLM reasoning / com
 Refuse AlphaZero on imperfect-info games (route to CFR). Refuse GRPO without a trusted verifier. Refuse any game-RL pipeline without a fixed baseline opponent set (self-play ELO is uncalibrated otherwise).
 ```
 
-## Exercises
+## 练习
 
-1. **Easy.** Implement the GRPO bandit in `code/main.py`. Train on 2 prompts × 4 answer tokens each. Converge in < 1,000 updates with `G=8`.
-2. **Medium.** Plug in PPO (clipped) and vanilla REINFORCE. Compare sample efficiency and reward variance to GRPO on the same bandit.
-3. **Hard.** Extend to a length-2 "reasoning chain": the agent emits two tokens and the verifier rewards the pair. Measure how GRPO handles the credit assignment across two-step sequences. (Hint: compute group advantage per *full sequence*, propagate to both token positions.)
+1. **简单。** 在 `code/main.py` 中实现 GRPO 老虎机。训练 2 个提示词 × 每个 4 个答案 token，在 `G=8` 时于 1,000 次更新内收敛。
+2. **中等。** 接入 PPO（clipped）和普通 REINFORCE。在相同老虎机上比较样本效率与奖励方差。
+3. **困难。** 扩展为长度 2 的“推理链”：智能体输出两个 token，验证器奖励成对结果。测量 GRPO 如何处理两步序列上的信用分配。（提示：按*完整序列*计算组优势，并传播到两个 token 位置。）
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
+| 术语 | 人们常说的 | 实际含义 |
 |------|-----------------|-----------------------|
-| MCTS | "Tree search with learned net" | Monte Carlo Tree Search; UCB1/PUCT selection with learned `(p, v)` priors. |
-| AlphaZero | "Self-play + MCTS" | Policy-value net trained to match MCTS visits and game outcome. |
-| MuZero | "Learned-model AlphaZero" | Same loop but in latent space via learned dynamics. |
-| GRPO | "Critic-free PPO" | Group Relative Policy Optimization; REINFORCE with group-mean baseline + KL. |
-| PUCT | "AlphaZero's UCB" | `Q + c · p · √N / (1 + N_a)` — balances value estimate with prior. |
-| Self-play | "Agent vs past self" | Standard for zero-sum; symmetric training signal. |
-| League play | "Population-based self-play" | Past + current + exploiters sampled as opponents. |
-| Verifier reward | "Verifiable RL" | Reward comes from a deterministic checker (tests pass, answer matches). |
-| Process reward | "PRM" | Scores each reasoning step, not just the final answer. |
+| MCTS | “带学习网络的树搜索” | 蒙特卡洛树搜索；用学习到的 `(p, v)` 先验进行 UCB1/PUCT 选择。 |
+| AlphaZero | “自弈 + MCTS” | 策略-价值网络，训练目标为匹配 MCTS 访问分布与对局结果。 |
+| MuZero | “学习模型的 AlphaZero” | 相同循环，但在学习到的潜在空间中运行。 |
+| GRPO | “无评论网络的 PPO” | 组相对策略优化（Group Relative Policy Optimization）；带组均值基线与 KL 惩罚的 REINFORCE。 |
+| PUCT | “AlphaZero 的 UCB” | `Q + c · p · √N / (1 + N_a)` —— 平衡价值估计与先验。 |
+| Self-play | “智能体与过去的自己对弈” | 零和博弈的标准做法；对称训练信号。 |
+| League play | “基于群体的自弈” | 从历史、当前和专门克制者中采样对手。 |
+| Verifier reward | “可验证 RL” | 奖励来自确定性检查器（测试通过、答案匹配）。 |
+| Process reward | “PRM” | 对每个推理步骤打分，而非仅对最终答案打分。 |
 
-## Further Reading
+## 延伸阅读
 
-- [Silver et al. (2017). Mastering the game of Go without human knowledge (AlphaGo Zero)](https://www.nature.com/articles/nature24270).
-- [Silver et al. (2018). A general reinforcement learning algorithm that masters chess, shogi, and Go through self-play (AlphaZero)](https://www.science.org/doi/10.1126/science.aar6404).
-- [Schrittwieser et al. (2020). Mastering Atari, Go, chess and shogi by planning with a learned model (MuZero)](https://www.nature.com/articles/s41586-020-03051-4).
-- [Vinyals et al. (2019). Grandmaster level in StarCraft II (AlphaStar)](https://www.nature.com/articles/s41586-019-1724-z).
-- [DeepSeek-AI (2024). DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models (GRPO)](https://arxiv.org/abs/2402.03300) — the paper that introduced GRPO and the group-relative baseline.
-- [DeepSeek-AI (2025). DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning](https://arxiv.org/abs/2501.12948) — the full four-stage R1 recipe plus the R1-Zero ablation.
-- [Brown et al. (2019). Superhuman AI for multiplayer poker (Pluribus)](https://www.science.org/doi/10.1126/science.aay2400) — CFR + deep-learning at scale.
-- [Tesauro (1995). Temporal Difference Learning and TD-Gammon](https://dl.acm.org/doi/10.1145/203330.203343) — the paper that started it all.
-- [Hugging Face TRL — GRPOTrainer](https://huggingface.co/docs/trl/main/en/grpo_trainer) — the production reference for applying GRPO with custom reward functions.
-- [Qwen Team (2024). Qwen2.5-Math — GRPO replication](https://github.com/QwenLM/Qwen2.5-Math) — open replication of the R1 recipe at multiple scales.
-- [Sutton & Barto (2018). Ch. 17 — Frontiers of Reinforcement Learning](http://incompleteideas.net/book/RLbook2020.pdf) — the textbook framing for self-play, search, and "designed reward" that R1 instantiates at LLM scale.
+- [Silver et al. (2017). Mastering the game of Go without human knowledge (AlphaGo Zero)](https://www.nature.com/articles/nature24270)。
+- [Silver et al. (2018). A general reinforcement learning algorithm that masters chess, shogi, and Go through self-play (AlphaZero)](https://www.science.org/doi/10.1126/science.aar6404)。
+- [Schrittwieser et al. (2020). Mastering Atari, Go, chess and shogi by planning with a learned model (MuZero)](https://www.nature.com/articles/s41586-020-03051-4)。
+- [Vinyals et al. (2019). Grandmaster level in StarCraft II (AlphaStar)](https://www.nature.com/articles/s41586-019-1724-z)。
+- [DeepSeek-AI (2024). DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models (GRPO)](https://arxiv.org/abs/2402.03300) —— 提出 GRPO 与组相对基线的论文。
+- [DeepSeek-AI (2025). DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning](https://arxiv.org/abs/2501.12948) —— 完整四阶段 R1 配方及 R1-Zero 消融。
+- [Brown et al. (2019). Superhuman AI for multiplayer poker (Pluribus)](https://www.science.org/doi/10.1126/science.aay2400) —— 大规模 CFR + 深度学习。
+- [Tesauro (1995). Temporal Difference Learning and TD-Gammon](https://dl.acm.org/doi/10.1145/203330.203343) —— 这一切的起点。
+- [Hugging Face TRL — GRPOTrainer](https://huggingface.co/docs/trl/main/en/grpo_trainer) —— 使用自定义奖励函数应用 GRPO 的生产级参考。
+- [Qwen Team (2024). Qwen2.5-Math — GRPO replication](https://github.com/QwenLM/Qwen2.5-Math) —— R1 配方在多规模上的开源复现。
+- [Sutton & Barto (2018). Ch. 17 — Frontiers of Reinforcement Learning](http://incompleteideas.net/book/RLbook2020.pdf) —— 关于自弈、搜索与“设计奖励”的教科书框架，R1 在 LLM 规模上实现了它。

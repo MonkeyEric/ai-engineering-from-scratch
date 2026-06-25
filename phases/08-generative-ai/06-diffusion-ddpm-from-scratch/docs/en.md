@@ -1,63 +1,63 @@
-# Diffusion Models — DDPM from Scratch
+# 扩散模型 —— 从零实现 DDPM
 
-> Ho, Jain, Abbeel (2020) gave the field a recipe it could not quit. Destroy the data with noise over a thousand small steps. Train one neural net to predict the noise. Reverse the process at inference. Today every mainstream image, video, 3D, and music model runs on this loop, possibly with flow matching or consistency tricks on top.
+> Ho、Jain、Abbeel（2020）为领域提供了一套“用过就回不去”的配方：用上千个小步骤把数据逐步摧毁成噪声，训练一个神经网络预测噪声，再在推理时把过程倒转。如今主流的图像、视频、3D 和音乐模型都运行在这个循环之上，可能还会在其基础上叠加流匹配（flow matching）或一致性（consistency）等技巧。
 
-**Type:** Build
-**Languages:** Python
-**Prerequisites:** Phase 3 · 02 (Backprop), Phase 8 · 02 (VAE)
-**Time:** ~75 minutes
+**类型：** 构建  
+**语言：** Python  
+**前置知识：** Phase 3 · 02（反向传播），Phase 8 · 02（VAE）  
+**时间：** 约 75 分钟
 
-## The Problem
+## 问题
 
-You want a sampler for `p_data(x)`. GANs play a minimax game that often diverges. VAEs produce blurry samples from a Gaussian decoder. What you really want is a training objective that is (a) a single stable loss (no saddle point, no minimax), (b) a lower bound on `log p(x)` (so you have likelihoods), and (c) samples that match SOTA quality.
+你希望构建一个能从 `p_data(x)` 采样的采样器（sampler）。GAN 常常陷入极小极大博弈而发散；VAE 从高斯解码器生成模糊样本。你真正想要的是一个满足以下三点的训练目标：（a）单一且稳定的损失（loss）（没有鞍点、没有极小极大）；（b）`log p(x)` 的下界（因而有可解释的似然）；（c）样本质量达到 SOTA。
 
-Sohl-Dickstein et al. (2015) had a theoretical answer: define a Markov chain `q(x_t | x_{t-1})` that gradually adds Gaussian noise, and train a reverse chain `p_θ(x_{t-1} | x_t)` to denoise. Ho, Jain, Abbeel (2020) showed the loss could be simplified to one line — predict the noise — and cleaned up the math. In 2020 this was a curiosity. In 2021 it produced state-of-the-art samples. In 2022 it became Stable Diffusion. In 2026 it is the substrate.
+Sohl-Dickstein 等人（2015）在理论上给出答案：定义一条逐步加入高斯（Gaussian）噪声的马尔可夫链（Markov chain）`q(x_t | x_{t-1})`，并训练一条反向链 `p_θ(x_{t-1} | x_t)` 来去噪。Ho、Jain、Abbeel（2020）则把损失简化为一句话——预测噪声——并整理清楚了数学。2020 年它只是一个新奇事物；2021 年它产出了 SOTA 样本；2022 年它演变成了 Stable Diffusion；到 2026 年，它已成为基础架构。
 
-## The Concept
+## 概念
 
-![DDPM: forward noise, reverse denoise](../assets/ddpm.svg)
+![DDPM：前向加噪，反向去噪](../assets/ddpm.svg)
 
-**Forward process `q`.** Add Gaussian noise in `T` small steps. The closed form — the reason the math is tractable — is that the cumulative step is also Gaussian:
+**前向过程 `q`。** 在 `T` 个小步骤中逐步加入高斯噪声。数学上可解的关键在于：累计步也是高斯分布：
 
 ```
 q(x_t | x_0) = N( sqrt(α̅_t) · x_0,  (1 - α̅_t) · I )
 ```
 
-where `α̅_t = ∏_{s=1..t} (1 - β_s)` for a schedule of `β_t`. Pick `β_t` from 1e-4 to 0.02 linearly over T=1000 steps and `x_T` is approximately `N(0, I)`.
+其中 `α̅_t = ∏_{s=1..t} (1 - β_s)`，对应一条 `β_t` 调度。让 `β_t` 在 T=1000 步内从 1e-4 线性增长到 0.02，`x_T` 就近似 `N(0, I)`。
 
-**Reverse process `p_θ`.** Learn a neural net `ε_θ(x_t, t)` that predicts the noise that was added. Given `x_t`, denoise by:
+**反向过程 `p_θ`。** 学习一个神经网络 `ε_θ(x_t, t)`，预测被加入的噪声。给定 `x_t`，按如下方式去噪：
 
 ```
 x_{t-1} = (1 / sqrt(α_t)) · ( x_t - (β_t / sqrt(1 - α̅_t)) · ε_θ(x_t, t) )  +  σ_t · z
 ```
 
-where `σ_t` is either `sqrt(β_t)` or a learned variance. The expression is ugly but it is just algebra — solving for `x_{t-1}` given the posterior `q(x_{t-1} | x_t, x_0)` and substituting `x_0` with its noise-predicted estimate.
+其中 `σ_t` 可以是 `sqrt(β_t)`，也可以是学习到的方差。这个式子看起来很复杂，但只是代数运算——用后验 `q(x_{t-1} | x_t, x_0)` 解出 `x_{t-1}`，再用基于噪声预测估计出的 `x_0` 替换进去。
 
-**Training loss.**
+**训练损失（loss）。**
 
 ```
 L_simple = E_{x_0, t, ε} [ || ε - ε_θ( sqrt(α̅_t) · x_0 + sqrt(1 - α̅_t) · ε,  t ) ||² ]
 ```
 
-Sample `x_0` from data, pick a random `t`, sample `ε ~ N(0, I)`, compute the noisy `x_t` in one shot via the closed form, and regress on the noise. One loss, no minimax, no KL, no reparameterization tricks.
+从数据中采样 `x_0`，随机选 `t`，采样 `ε ~ N(0, I)`，通过闭式一次性算出带噪的 `x_t`，然后对噪声做回归。一个损失函数，没有极小极大、没有 KL、没有重参数化技巧。
 
-**Sampling.** Start `x_T ~ N(0, I)`. Iterate the reverse step from `t = T` to `1`. Done.
+**采样。** 从 `x_T ~ N(0, I)` 开始，从 `t = T` 迭代到 `1` 执行反向步骤。完成。
 
-## Why it works
+## 为什么有效
 
-Three intuitions:
+三点直觉：
 
-1. **Denoising is easy; generating is hard.** At `t=T`, the data is pure noise — the net has to solve a trivial problem. At `t=0`, the net only has to clean up a few pixels. At intermediate `t`, the problem is hard but the net has many gradients flowing through the same weights from every noise level.
+1. **去噪容易，生成难。** 在 `t=T` 时，数据已是纯噪声——网络要解决的问题很平凡。在 `t=0` 时，网络只需清理少量像素。在中间 `t`，问题虽难，但同一套权重能从所有噪声层级获得大量梯度。
 
-2. **Score matching in disguise.** Vincent (2011) proved that predicting the noise is equivalent to estimating `∇_x log q(x_t | x_0)`, the *score*. The reverse SDE uses this score to walk up the density gradient — a guided random walk toward high-probability regions.
+2. **伪装成噪声预测的分数匹配（score matching）。** Vincent（2011）证明，预测噪声等价于估计 `∇_x log q(x_t | x_0)`，即*分数（score）*。反向 SDE 利用这个分数沿密度梯度向上走——一场朝着高概率区域的有引导的随机游走。
 
-3. **The ELBO reduces to simple MSE.** The full variational lower bound has a KL term per timestep. With DDPM's parameterization those KL terms simplify to MSE on noise prediction with specific coefficients; Ho dropped the coefficients (calling it "simple" loss) and quality *improved*.
+3. **ELBO 退化为简单的 MSE。** 完整变分下界（ELBO）在每个时间步都有一个 KL 项。在 DDPM 的参数化下，这些 KL 项会简化为对噪声预测的 MSE，并带有一些系数；Ho 把这些系数去掉（称为“simple”损失），结果质量反而*提升*了。
 
-## Build It
+## 动手实现
 
-`code/main.py` implements a 1-D DDPM. Data is a two-mode mixture. The "net" is a tiny MLP that takes `(x_t, t)` and outputs predicted noise. Training is the one-line loss. Sampling iterates the reverse chain.
+`code/main.py` 实现了一个一维 DDPM。数据是一个双峰混合分布。“网络”是一个小型 MLP，输入 `(x_t, t)`，输出预测的噪声。训练就是那一行损失函数。采样则迭代反向链。
 
-### Step 1: the forward schedule (closed form)
+### 步骤 1：前向调度（闭式）
 
 ```python
 betas = [1e-4 + (0.02 - 1e-4) * t / (T - 1) for t in range(T)]
@@ -69,7 +69,7 @@ for a in alphas:
     alpha_bars.append(cum)
 ```
 
-### Step 2: sample `x_t` in one shot
+### 步骤 2：一次性采样 `x_t`
 
 ```python
 def forward_sample(x0, t, alpha_bars, rng):
@@ -79,7 +79,7 @@ def forward_sample(x0, t, alpha_bars, rng):
     return x_t, eps
 ```
 
-### Step 3: one training step
+### 步骤 3：一次训练步骤
 
 ```python
 def train_step(x0, model, alpha_bars, rng):
@@ -90,7 +90,7 @@ def train_step(x0, model, alpha_bars, rng):
     return loss, gradient_step(model, ...)
 ```
 
-### Step 4: reverse sampling
+### 步骤 4：反向采样
 
 ```python
 def sample(model, alpha_bars, T, rng):
@@ -104,78 +104,78 @@ def sample(model, alpha_bars, T, rng):
     return x
 ```
 
-For a 1-D problem with 40 timesteps and a 24-unit MLP, this learns the two-mode mixture in ~200 epochs.
+对于 1 维问题、40 个时间步、24 个单元的 MLP，这个实现大约 200 个 epoch 就能学会双峰混合分布。
 
-## Time conditioning
+## 时间条件
 
-The net needs to know which timestep it is denoising. Two standard options:
+网络需要知道当前正在对哪个时间步去噪。两种常见选择：
 
-- **Sinusoidal embedding.** Like Transformer positional encoding. `embed(t) = [sin(t/ω_0), cos(t/ω_0), sin(t/ω_1), ...]`. Pass through an MLP, broadcast into the net.
-- **Film / group-norm conditioning.** Project embedding to per-channel scale/bias (FiLM) at each block.
+- **正弦嵌入（sinusoidal embedding）。** 类似 Transformer 的位置编码。`embed(t) = [sin(t/ω_0), cos(t/ω_0), sin(t/ω_1), ...]`。先过一个 MLP，再广播到网络中。
+- **FiLM / group-norm 条件。** 把嵌入投影为每个通道的缩放/偏置（FiLM），加在每个块中。
 
-Our toy code uses sinusoidal → concat. Production U-Nets use FiLM.
+我们的玩具代码使用正弦嵌入 → 拼接。生产级 U-Net 使用 FiLM。
 
-## Pitfalls
+## 注意事项
 
-- **Schedule matters a lot.** Linear `β` is the DDPM default but cosine schedule (Nichol & Dhariwal, 2021) gives better FID for the same compute. Switch schedules if quality plateaus.
-- **Timestep embedding is fragile.** Passing raw `t` as a float works for toy 1-D but fails for images; always use a proper embedding.
-- **V-prediction vs ε-prediction.** For narrow regimes (very small or very large t), `ε` has poor signal-to-noise. V-prediction (`v = α·ε - σ·x`) is more stable; SDXL, SD3, and Flux use it.
-- **Classifier-free guidance.** At inference, compute both conditional and unconditional `ε`, then `ε_cfg = (1 + w) · ε_cond - w · ε_uncond` with `w ≈ 3-7`. Covered in Lesson 08.
-- **1000 steps is a lot.** Production uses DDIM (20-50 steps), DPM-Solver (10-20 steps), or distillation (1-4 steps). See Lesson 12.
+- **调度（schedule）很重要。** 线性 `β` 是 DDPM 默认，但余弦调度（Nichol & Dhariwal, 2021）在相同计算量下能得到更好的 FID。如果质量遇到瓶颈，就换调度。
+- **时间步嵌入很脆弱。** 直接把原始 `t` 作为浮点数传入在 1 维玩具问题上可以，但对图像会失败；务必使用合适的嵌入。
+- **V-prediction vs ε-prediction。** 在极端区域（`t` 非常小或非常大）时，`ε` 的信噪比很差。V-prediction（`v = α·ε - σ·x`）更稳定；SDXL、SD3 和 Flux 都使用它。
+- **无分类器引导（classifier-free guidance）。** 推理时同时计算有条件 `ε` 和无条件 `ε`，然后 `ε_cfg = (1 + w) · ε_cond - w · ε_uncond`，其中 `w ≈ 3-7`。第 08 课会详细讲。
+- **1000 步太多了。** 生产环境使用 DDIM（20-50 步）、DPM-Solver（10-20 步）或蒸馏（1-4 步）。见第 12 课。
 
-## Use It
+## 应用场景
 
-| Role | Typical stack in 2026 |
-|------|-----------------------|
-| Image pixel-space diffusion (small, toy) | DDPM + U-Net |
-| Image latent diffusion | VAE encoder + U-Net or DiT (Lesson 07) |
-| Video latent diffusion | Spatiotemporal DiT (Sora, Veo, WAN) |
-| Audio latent diffusion | Encodec + diffusion transformer |
-| Science (molecules, proteins, physics) | Equivariant diffusion (EDM, RFdiffusion, AlphaFold3) |
+| 角色 | 2026 年的典型技术栈 |
+|------|---------------------|
+| 图像像素空间扩散（小型、玩具级） | DDPM + U-Net |
+| 图像潜在扩散 | VAE 编码器 + U-Net 或 DiT（第 07 课） |
+| 视频潜在扩散 | 时空 DiT（Sora、Veo、WAN） |
+| 音频潜在扩散 | Encodec + 扩散 Transformer |
+| 科学领域（分子、蛋白质、物理） | 等变扩散（EDM、RFdiffusion、AlphaFold3） |
 
-Diffusion is the universal generative backbone. Flow matching (Lesson 13) is the 2024-2026 competitor that usually wins on inference speed for the same quality.
+扩散模型是通用的生成式骨干网络。流匹配（flow matching，第 13 课）是 2024-2026 年的竞争者，通常在相同质量下推理速度更快。
 
-## Ship It
+## 交付
 
-Save `outputs/skill-diffusion-trainer.md`. Skill takes a dataset + compute budget and outputs: schedule (linear/cosine/sigmoid), prediction target (ε/v/x), number of steps, guidance scale, sampler family, and an eval protocol.
+保存 `outputs/skill-diffusion-trainer.md`。该 skill 接收一个数据集 + 计算预算，输出：调度（线性/余弦/S 型（sigmoid））、预测目标（ε/v/x）、步数、引导尺度、采样器族，以及评估协议。
 
-## Exercises
+## 练习
 
-1. **Easy.** Change T from 40 to 10 in `code/main.py`. How does sample quality (visual histogram of outputs) degrade? At what T does the two-mode structure collapse?
-2. **Medium.** Switch from ε-prediction to v-prediction. Re-derive the reverse step. Compare final sample quality.
-3. **Hard.** Add classifier-free guidance. Condition on a class label `c ∈ {0, 1}`, drop it 10% of the time during training, and at sampling time use `ε = (1+w)·ε_cond - w·ε_uncond`. Measure the conditional-mode-hit rate at `w = 0, 1, 3, 7`.
+1. **简单。** 在 `code/main.py` 中把 T 从 40 改成 10。样本质量（输出可视化直方图）如何退化？双峰结构在多大的 T 下会崩塌？
+2. **中等。** 从 ε-prediction 切换到 v-prediction。重新推导反向步骤。比较最终样本质量。
+3. **困难。** 加入无分类器引导。以类别标签 `c ∈ {0, 1}` 为条件，训练时 10% 的概率丢弃它，采样时使用 `ε = (1+w)·ε_cond - w·ε_uncond`。测量 `w = 0, 1, 3, 7` 时的条件模式命中率。
 
-## Key Terms
+## 关键术语
 
-| Term | What people say | What it actually means |
-|------|-----------------|-----------------------|
-| Forward process | "Adding noise" | Fixed Markov chain `q(x_t | x_{t-1})` that destroys the data. |
-| Reverse process | "Denoising" | Learned chain `p_θ(x_{t-1} | x_t)` that reconstructs the data. |
-| β schedule | "The noise ladder" | Per-step variance; linear, cosine, or sigmoid. |
-| α̅ | "Alpha bar" | Cumulative product `∏(1 - β)`; gives closed-form `x_t` from `x_0`. |
-| Simple loss | "MSE on noise" | `||ε - ε_θ(x_t, t)||²`; all variational derivations collapse to this. |
-| ε-prediction | "Predict noise" | Output is the noise added; standard DDPM. |
-| V-prediction | "Predict velocity" | Output is `α·ε - σ·x`; better conditioning across t. |
-| DDPM | "The paper" | Ho et al. 2020; linear β, 1000 steps, U-Net. |
-| DDIM | "Deterministic sampler" | Non-Markov sampler, 20-50 steps, same training objective. |
-| Classifier-free guidance | "CFG" | Mix conditional and unconditional noise predictions to amplify conditioning. |
+| 术语 | 人们的说法 | 实际含义 |
+|------|-----------|----------|
+| 前向过程（forward process） | “加噪” | 固定的马尔可夫链 `q(x_t | x_{t-1})`，用于逐步破坏数据。 |
+| 反向过程（reverse process） | “去噪” | 学习到的链 `p_θ(x_{t-1} | x_t)`，用于重建数据。 |
+| β 调度（β schedule） | “噪声阶梯” | 每步方差；可选线性、余弦或 S 型（sigmoid）。 |
+| α̅ | “Alpha bar” | 累计乘积 `∏(1 - β)`；给出从 `x_0` 到 `x_t` 的闭式。 |
+| 简单损失（simple loss） | “对噪声的 MSE” | `||ε - ε_θ(x_t, t)||²`；所有变分推导都退化为它。 |
+| ε-prediction | “预测噪声” | 输出即被加入的噪声；标准 DDPM。 |
+| V-prediction | “预测速度” | 输出为 `α·ε - σ·x`；在 `t` 的全范围内条件更稳定。 |
+| DDPM | “那篇论文” | Ho 等人 2020；线性 β、1000 步、U-Net。 |
+| DDIM | “确定性采样器” | 非马尔可夫采样器，20-50 步，训练目标相同。 |
+| 无分类器引导（classifier-free guidance） | “CFG” | 混合有条件与无条件噪声预测，以放大条件作用。 |
 
-## Production note: diffusion inference is a step-count problem
+## 生产提示：扩散推理是一个步数问题
 
-The DDPM paper runs T=1000 reverse steps. Nobody ships that in production. Every real inference stack picks one of three strategies — and each maps cleanly to production framing of "where is the latency coming from":
+DDPM 论文运行 T=1000 步反向过程。没人会在生产里直接上线这个。每个真实推理栈都会选择以下三种策略之一——而每种都清晰对应到生产里“延迟从哪里来”的分析框架：
 
-1. **Faster sampler, same model.** DDIM (20-50 steps), DPM-Solver++ (10-20), UniPC (8-16). Drop-in replacement of the reverse loop; the trained `ε_θ` weights are untouched. Cuts latency 20-50×.
-2. **Distillation.** Train a student to match the teacher in fewer steps: Progressive Distillation (2 → 1), Consistency Models (arbitrary → 1-4), LCM, SDXL-Turbo, SD3-Turbo. Cuts latency another 5-10×, requires retraining.
-3. **Caching and compilation.** `torch.compile(unet, mode="reduce-overhead")`, TensorRT-LLM's diffusion backends, `xformers`/SDPA attention, bf16 weights. Cuts per-step latency ~2×. Stacks with (1) and (2).
+1. **更快采样器，模型不变。** DDIM（20-50 步）、DPM-Solver++（10-20 步）、UniPC（8-16 步）。直接替换反向循环；训练好的 `ε_θ` 权重不动。延迟降低 20-50 倍。
+2. **蒸馏（distillation）。** 训练学生网络在更少步数内匹配老师：渐进蒸馏（2 → 1）、一致性模型（任意 → 1-4 步）、LCM、SDXL-Turbo、SD3-Turbo。延迟再降 5-10 倍，但需要重新训练。
+3. **缓存与编译。** `torch.compile(unet, mode="reduce-overhead")`、TensorRT-LLM 的扩散后端、`xformers`/SDPA attention、bf16 权重。每步延迟降低约 2 倍。可与（1）和（2）叠加。
 
-For a production diffusion server the budget conversation is the same as production literature describes for LLMs: latency is `num_steps × step_cost + VAE_decode`, throughput is `batch_size × (num_steps × step_cost)^-1`. TTFT is small (one step); TPOT-equivalent is the full response time because image generation is "all-at-once" from the user's perspective.
+对于一个生产级扩散服务，预算讨论与 LLM 的生产文献所述相同：延迟 = `num_steps × step_cost + VAE_decode`，吞吐量 = `batch_size × (num_steps × step_cost)^-1`。TTFT 很小（只需一步）；从用户视角看 TPOT 等价于完整响应时间，因为图像生成是“一次性完成”的。
 
-## Further Reading
+## 延伸阅读
 
-- [Sohl-Dickstein et al. (2015). Deep Unsupervised Learning using Nonequilibrium Thermodynamics](https://arxiv.org/abs/1503.03585) — the diffusion paper, ahead of its time.
-- [Ho, Jain, Abbeel (2020). Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239) — DDPM.
-- [Song, Meng, Ermon (2021). Denoising Diffusion Implicit Models](https://arxiv.org/abs/2010.02502) — DDIM, fewer steps.
-- [Nichol & Dhariwal (2021). Improved DDPM](https://arxiv.org/abs/2102.09672) — cosine schedule, learned variance.
-- [Dhariwal & Nichol (2021). Diffusion Models Beat GANs on Image Synthesis](https://arxiv.org/abs/2105.05233) — classifier guidance.
-- [Ho & Salimans (2022). Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598) — CFG.
-- [Karras et al. (2022). Elucidating the Design Space of Diffusion-Based Generative Models (EDM)](https://arxiv.org/abs/2206.00364) — unified notation, cleanest recipe.
+- [Sohl-Dickstein et al. (2015). Deep Unsupervised Learning using Nonequilibrium Thermodynamics](https://arxiv.org/abs/1503.03585) —— 扩散模型的奠基论文，超前于时代。
+- [Ho, Jain, Abbeel (2020). Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239) —— DDPM。
+- [Song, Meng, Ermon (2021). Denoising Diffusion Implicit Models](https://arxiv.org/abs/2010.02502) —— DDIM，更少步数。
+- [Nichol & Dhariwal (2021). Improved DDPM](https://arxiv.org/abs/2102.09672) —— 余弦调度、学习方差。
+- [Dhariwal & Nichol (2021). Diffusion Models Beat GANs on Image Synthesis](https://arxiv.org/abs/2105.05233) —— 分类器引导。
+- [Ho & Salimans (2022). Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598) —— CFG。
+- [Karras et al. (2022). Elucidating the Design Space of Diffusion-Based Generative Models (EDM)](https://arxiv.org/abs/2206.00364) —— 统一记号、最清晰的配方。
